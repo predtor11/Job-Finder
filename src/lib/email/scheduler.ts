@@ -203,24 +203,26 @@ export async function dispatchDueEmails(userId: string): Promise<DispatchResult>
           },
         });
 
-        if (email.applicationId) {
-          await tx.emailThread.upsert({
-            where: {
-              userId_gmailThreadId: {
-                userId,
-                gmailThreadId: sendResult.gmailThreadId,
-              },
-            },
-            create: {
+        // Track the Gmail thread for EVERY outbound email (application or
+        // standalone outreach) so inbox monitoring catches all replies.
+        await tx.emailThread.upsert({
+          where: {
+            userId_gmailThreadId: {
               userId,
-              applicationId: email.applicationId,
               gmailThreadId: sendResult.gmailThreadId,
-              subject: email.subject,
-              lastMessageAt: new Date(),
             },
-            update: { lastMessageAt: new Date() },
-          });
+          },
+          create: {
+            userId,
+            applicationId: email.applicationId,
+            gmailThreadId: sendResult.gmailThreadId,
+            subject: email.subject,
+            lastMessageAt: new Date(),
+          },
+          update: { lastMessageAt: new Date() },
+        });
 
+        if (email.applicationId) {
           const isFollowUp = email.type === "FOLLOW_UP";
           await tx.application.update({
             where: { id: email.applicationId },

@@ -23,6 +23,18 @@ import {
 import { useApiQuery, useApiMutation } from "@/hooks/use-api";
 import { toast } from "sonner";
 
+const FREE_MAIL = new Set([
+  "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "outlook.com",
+  "hotmail.com", "live.com", "icloud.com", "proton.me", "protonmail.com",
+  "aol.com", "rediffmail.com", "zoho.com", "yandex.com", "mail.com",
+]);
+
+/** Trust signal: company-domain addresses are far less likely to be scams. */
+function emailTrust(email: string): "corporate" | "free" {
+  const domain = email.split("@")[1]?.toLowerCase() ?? "";
+  return FREE_MAIL.has(domain) ? "free" : "corporate";
+}
+
 interface RecruiterRow {
   id: string;
   name: string;
@@ -209,8 +221,39 @@ export default function RecruitersPage() {
                       </p>
                     </TableCell>
                     <TableCell className="text-sm">{rec.company?.name ?? "—"}</TableCell>
-                    <TableCell className="hidden font-mono text-xs md:table-cell">
-                      {rec.email ?? <span className="text-muted-foreground">not public</span>}
+                    <TableCell className="hidden md:table-cell">
+                      {rec.email ? (
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono text-xs">{rec.email}</span>
+                          {emailTrust(rec.email) === "corporate" ? (
+                            <Tooltip>
+                              <TooltipTrigger>
+                                <Badge className="border-success/30 bg-success/10 px-1.5 py-0 text-[10px] font-normal text-emerald-700 dark:text-emerald-400" variant="outline">
+                                  company domain
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                Address is on a company domain — stronger authenticity signal
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <Tooltip>
+                              <TooltipTrigger>
+                                <Badge className="border-warning/40 bg-warning/10 px-1.5 py-0 text-[10px] font-normal text-amber-700 dark:text-amber-400" variant="outline">
+                                  free mailbox
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                Free email provider — legitimate for small startups, but
+                                verify before sending; real companies rarely recruit from
+                                personal mailboxes
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">not public</span>
+                      )}
                     </TableCell>
                     <TableCell className="hidden lg:table-cell">
                       <a
