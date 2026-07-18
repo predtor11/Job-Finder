@@ -122,7 +122,7 @@ Return JSON: { "subject": "...", "body": "..." }`;
     userId,
     tier: "smart",
     temperature: 0.9,
-    maxOutputTokens: 1024,
+    maxOutputTokens: 4096, // headroom for models with non-disableable thinking
   });
 
   // Uniqueness check — one rewrite on collision with any recent email body.
@@ -131,7 +131,7 @@ Return JSON: { "subject": "...", "body": "..." }`;
     result = await generateJSON(
       `${prompt}\n\nYour previous draft duplicated an earlier email. Write it again with substantially different wording and structure.`,
       emailSchema,
-      { userId, tier: "smart", temperature: 1.0, maxOutputTokens: 1024 }
+      { userId, tier: "smart", temperature: 1.0, maxOutputTokens: 4096 }
     );
     contentHash = await sha256(normalizeForHash(result.body));
   }

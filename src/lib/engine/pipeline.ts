@@ -3,6 +3,7 @@ import { analyzeJobFit, persistPostingContacts } from "@/lib/ai/job-analyzer";
 import { generateCoverLetter } from "@/lib/ai/cover-letter";
 import { generateEmail } from "@/lib/ai/email-generator";
 import { scheduleEmail } from "@/lib/email/scheduler";
+import { discoverRecruitersForJob } from "@/lib/recruiters/discovery";
 import { extractEmails } from "@/lib/utils";
 
 /**
@@ -27,6 +28,9 @@ export async function createApplication(params: {
   resumeId?: string;       // manual override; defaults to analyzer's best pick
   recruiterId?: string;    // optional targeted contact
   toEmailOverride?: string;
+  /** Crawl the company's public pages for contacts when the posting has none.
+   *  On for interactive applies; off for the bulk auto-draft pipeline. */
+  deepContactSearch?: boolean;
 }): Promise<{ applicationId: string; emailId: string | null }> {
   const { userId, jobId } = params;
 
@@ -109,10 +113,29 @@ export async function createApplication(params: {
     // recruiter → any contact tied to this job → contact named in the
     // analysis → an email printed in the posting text itself.
     await persistPostingContacts(userId, jobId);
-    const jobRecruiter = await prisma.recruiter.findFirst({
+    let jobRecruiter = await prisma.recruiter.findFirst({
       where: { userId, jobId, email: { not: null } },
       orderBy: { confidence: "desc" },
     });
+
+    // Last resort on interactive applies: scan the company's public pages.
+    if (
+      !jobRecruiter &&
+      !params.toEmailOverride &&
+      !recruiter?.email &&
+      params.deepContactSearch
+    ) {
+      try {
+        await discoverRecruitersForJob(userId, jobId);
+        jobRecruiter = await prisma.recruiter.findFirst({
+          where: { userId, jobId, email: { not: null } },
+          orderBy: { confidence: "desc" },
+        });
+      } catch {
+        // Contact search is best-effort — the draft still gets created.
+      }
+    }
+
     const toEmail =
       params.toEmailOverride ??
       recruiter?.email ??

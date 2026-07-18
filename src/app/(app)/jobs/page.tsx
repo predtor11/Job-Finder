@@ -54,6 +54,7 @@ const STAGE_LABELS: Record<string, string> = {
   saving: "Saving new jobs…",
   matching: "Checking your saved searches…",
   analyzing: "Scoring newest jobs against your resumes…",
+  drafting: "Drafting applications for strong matches…",
   done: "Finished",
   error: "Failed",
 };
@@ -292,6 +293,7 @@ function JobsContent() {
                     {progress.skippedIrrelevant > 0 &&
                       ` · ${progress.skippedIrrelevant} off-profile`}
                     {progress.analyzed > 0 && ` · ${progress.analyzed} scored`}
+                    {progress.drafted > 0 && ` · ${progress.drafted} drafted`}
                   </>
                 ) : (
                   "starting…"

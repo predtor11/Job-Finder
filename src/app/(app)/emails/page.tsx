@@ -77,21 +77,49 @@ function EmailsContent() {
     onSuccess: () => setEditing(null),
   });
 
+  const approveAll = useApiMutation<
+    void,
+    { approved: number; skippedColdOutreach: number }
+  >("POST", () => "/api/emails/approve-all", {
+    invalidate: [["emails"], ["applications"], ["analytics"]],
+    successMessage: (r) =>
+      r.skippedColdOutreach > 0
+        ? `${r.approved} approved and queued — ${r.skippedColdOutreach} cold outreach email(s) still need individual approval`
+        : `${r.approved} approved — sending is paced inside your working hours`,
+  });
+
   const emails = data?.emails ?? [];
+  const bulkApprovable = emails.filter(
+    (e) => e.status === "PENDING_APPROVAL" && e.type !== "COLD_OUTREACH"
+  ).length;
 
   return (
     <>
       <Topbar title="Approval Queue" />
       <main className="flex-1 space-y-4 p-4 md:p-6">
-        <Tabs value={tab} onValueChange={setTab}>
-          <TabsList>
-            {TABS.map((t) => (
-              <TabsTrigger key={t.value} value={t.value} className="text-xs">
-                {t.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Tabs value={tab} onValueChange={setTab}>
+            <TabsList>
+              {TABS.map((t) => (
+                <TabsTrigger key={t.value} value={t.value} className="text-xs">
+                  {t.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+          {tab === "PENDING_APPROVAL" && bulkApprovable > 1 && (
+            <Button
+              size="sm"
+              onClick={() => approveAll.mutate()}
+              disabled={approveAll.isPending}
+            >
+              <Check className="size-3.5" />
+              {approveAll.isPending
+                ? "Approving…"
+                : `Approve all ${bulkApprovable}`}
+            </Button>
+          )}
+        </div>
 
         {isLoading ? (
           <Skeleton className="h-64 w-full" />

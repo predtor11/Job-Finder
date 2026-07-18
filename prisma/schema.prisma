@@ -81,6 +81,10 @@ model Setting {
   autoApproveThreshold Int      @default(80) @map("auto_approve_threshold") /// match score needed for AUTO mode
   emailSignature       String?  @map("email_signature")
 
+  // Autopilot
+  autoDraftEnabled   Boolean @default(true) @map("auto_draft_enabled") /// auto-draft applications for strong matches after discovery
+  autoDraftThreshold Int     @default(70) @map("auto_draft_threshold") /// min match score for auto-drafting
+
   // Follow-ups
   followUpAfterDays  Int     @default(5) @map("follow_up_after_days")
   secondFollowUpDays Int     @default(7) @map("second_follow_up_days") /// days after first follow-up

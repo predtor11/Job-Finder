@@ -53,6 +53,10 @@ const createSchema = z.object({
 /** POST /api/applications — start the pipeline for a job. */
 export const POST = withAuth(async ({ request, userId }) => {
   const body = await parseBody(request, createSchema);
-  const result = await createApplication({ userId, ...body });
+  const result = await createApplication({
+    userId,
+    ...body,
+    deepContactSearch: true, // interactive applies get the full contact search
+  });
   return NextResponse.json(result, { status: 201 });
 });

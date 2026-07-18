@@ -44,6 +44,8 @@ const patchSchema = z.object({
   minSendGapMinutes: z.number().int().min(1).max(240).optional(),
   sendJitterMinutes: z.number().int().min(0).max(120).optional(),
   autoApproveThreshold: z.number().int().min(0).max(100).optional(),
+  autoDraftEnabled: z.boolean().optional(),
+  autoDraftThreshold: z.number().int().min(0).max(100).optional(),
   emailSignature: z.string().max(2000).nullish(),
   followUpAfterDays: z.number().int().min(1).max(60).optional(),
   secondFollowUpDays: z.number().int().min(1).max(60).optional(),

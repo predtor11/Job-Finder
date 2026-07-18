@@ -12,6 +12,7 @@ import {
 } from "@/lib/jobs/types";
 import { normalizeCompanyName, sha256 } from "@/lib/utils";
 import { analyzeJob } from "@/lib/ai/job-analyzer";
+import { createApplication } from "@/lib/engine/pipeline";
 import { AiBudgetExceededError, AiKeyMissingError } from "@/lib/ai/gemini";
 import type { Job, Prisma } from "@prisma/client";
 
@@ -43,7 +44,14 @@ export interface SourceProgress {
 }
 
 export interface DiscoveryProgress {
-  stage: "fetching" | "saving" | "matching" | "analyzing" | "done" | "error";
+  stage:
+    | "fetching"
+    | "saving"
+    | "matching"
+    | "analyzing"
+    | "drafting"
+    | "done"
+    | "error";
   sources: Record<string, SourceProgress>;
   fetched: number;
   inserted: number;
@@ -52,6 +60,8 @@ export interface DiscoveryProgress {
   skippedIrrelevant: number;
   /** Jobs auto-scored against the resume library this run. */
   analyzed: number;
+  /** Applications auto-drafted for strong matches this run. */
+  drafted: number;
   errors: string[];
   startedAt: string;
   finishedAt?: string;
@@ -68,6 +78,9 @@ const CHUNK_SIZE = 100;
 
 /** Max jobs auto-scored per discovery run (2 AI calls each — budget guard). */
 const AUTO_ANALYZE_LIMIT = 10;
+
+/** Max applications auto-drafted per run (~3 AI calls each). */
+const AUTO_DRAFT_LIMIT = 5;
 
 function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -179,6 +192,7 @@ export async function runDiscovery(userId: string): Promise<DiscoveryResult> {
     duplicates: 0,
     skippedIrrelevant: 0,
     analyzed: 0,
+    drafted: 0,
     errors: [],
     startedAt: new Date().toISOString(),
   };
@@ -354,6 +368,7 @@ export async function runDiscovery(userId: string): Promise<DiscoveryResult> {
     const parsedResumes = await prisma.resume.count({
       where: { userId, parseStatus: "PARSED" },
     });
+    const analyzedJobIds: string[] = [];
     if (parsedResumes > 0 && createdJobs.length > 0) {
       progress.stage = "analyzing";
       await saveProgress();
@@ -369,6 +384,7 @@ export async function runDiscovery(userId: string): Promise<DiscoveryResult> {
       for (const job of targets) {
         try {
           await analyzeJob(userId, job.id);
+          analyzedJobIds.push(job.id);
           progress.analyzed++;
           await saveProgress();
         } catch (error) {
@@ -383,6 +399,57 @@ export async function runDiscovery(userId: string): Promise<DiscoveryResult> {
             break;
           }
           // One bad posting must not stop the rest.
+        }
+      }
+    }
+
+    // ── 8. Autopilot: draft applications for the strongest matches ──
+    // Cover letter + email (when a public contact exists) land in the
+    // approval queue — nothing sends without the user's send rules.
+    if ((settings?.autoDraftEnabled ?? true) && analyzedJobIds.length > 0) {
+      const threshold = settings?.autoDraftThreshold ?? 70;
+      const strong = await prisma.job.findMany({
+        where: {
+          id: { in: analyzedJobIds },
+          userId,
+          analysis: { matchScore: { gte: threshold } },
+          applications: { none: {} },
+        },
+        include: { analysis: { select: { matchScore: true } } },
+        orderBy: { discoveredAt: "desc" },
+        take: AUTO_DRAFT_LIMIT,
+      });
+
+      if (strong.length > 0) {
+        progress.stage = "drafting";
+        await saveProgress();
+
+        for (const job of strong) {
+          try {
+            await createApplication({ userId, jobId: job.id });
+            progress.drafted++;
+            await saveProgress();
+          } catch (error) {
+            if (
+              error instanceof AiBudgetExceededError ||
+              error instanceof AiKeyMissingError
+            ) {
+              progress.errors.push("AI limit reached — remaining drafts skipped.");
+              break;
+            }
+          }
+        }
+
+        if (progress.drafted > 0) {
+          await prisma.notification.create({
+            data: {
+              userId,
+              type: "NEW_JOBS",
+              title: `${progress.drafted} application draft${progress.drafted === 1 ? "" : "s"} ready for review`,
+              body: "Auto-drafted for your strongest matches — review and approve in one click.",
+              link: "/emails?status=PENDING_APPROVAL",
+            },
+          });
         }
       }
     }

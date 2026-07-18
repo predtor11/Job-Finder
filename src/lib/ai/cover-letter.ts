@@ -73,7 +73,7 @@ Return only the letter text.`;
       userId,
       tier: "smart",
       temperature: 0.85,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 4096, // headroom for models with non-disableable thinking
     })
   ).trim();
 

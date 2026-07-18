@@ -1,4 +1,8 @@
-import { GoogleGenAI } from "@google/genai";
+import {
+  GoogleGenAI,
+  type GenerateContentConfig,
+  type GenerateContentResponse,
+} from "@google/genai";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/crypto";
@@ -111,6 +115,43 @@ function statusOf(error: unknown): number | undefined {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Call the model with thinking disabled — Gemini 3-family models otherwise
+ * burn most of maxOutputTokens on internal thought and return truncated JSON.
+ * Models that *require* thinking (pro tier) reject thinkingBudget: 0 with a
+ * 400, so we retry once without the override.
+ */
+async function callModel(
+  ai: GoogleGenAI,
+  model: string,
+  contents: string,
+  config: GenerateContentConfig
+): Promise<GenerateContentResponse> {
+  try {
+    return await ai.models.generateContent({
+      model,
+      contents,
+      config: { ...config, thinkingConfig: { thinkingBudget: 0 } },
+    });
+  } catch (error) {
+    if (statusOf(error) === 400) {
+      return ai.models.generateContent({ model, contents, config });
+    }
+    throw error;
+  }
+}
+
+/** Text of a response, throwing a diagnosable error when the model sent none. */
+function responseText(response: GenerateContentResponse): string {
+  const text = response.text ?? "";
+  if (!text.trim()) {
+    throw new Error(
+      `Model returned no text (finishReason: ${response.candidates?.[0]?.finishReason ?? "unknown"})`
+    );
+  }
+  return text;
+}
+
 export interface GenerateOptions {
   userId: string;
   tier?: ModelTier;
@@ -137,24 +178,19 @@ export async function generateText(
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          temperature: options.temperature ?? 0.7,
-          maxOutputTokens: options.maxOutputTokens ?? 4096,
-          ...(options.systemInstruction
-            ? { systemInstruction: options.systemInstruction }
-            : {}),
-        },
+      const response = await callModel(ai, model, prompt, {
+        temperature: options.temperature ?? 0.7,
+        maxOutputTokens: options.maxOutputTokens ?? 4096,
+        ...(options.systemInstruction
+          ? { systemInstruction: options.systemInstruction }
+          : {}),
       });
 
-      const text = response.text ?? "";
       await checkAndRecordUsage(options.userId, model, config.dailyBudget, {
         input: response.usageMetadata?.promptTokenCount ?? 0,
         output: response.usageMetadata?.candidatesTokenCount ?? 0,
       });
-      return text;
+      return responseText(response);
     } catch (error) {
       lastError = error;
       const status = statusOf(error);
@@ -192,17 +228,13 @@ export async function generateJSON<T>(
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: currentPrompt,
-        config: {
-          temperature: options.temperature ?? 0.2,
-          maxOutputTokens: options.maxOutputTokens ?? 8192,
-          responseMimeType: "application/json",
-          ...(options.systemInstruction
-            ? { systemInstruction: options.systemInstruction }
-            : {}),
-        },
+      const response = await callModel(ai, model, currentPrompt, {
+        temperature: options.temperature ?? 0.2,
+        maxOutputTokens: options.maxOutputTokens ?? 8192,
+        responseMimeType: "application/json",
+        ...(options.systemInstruction
+          ? { systemInstruction: options.systemInstruction }
+          : {}),
       });
 
       await checkAndRecordUsage(options.userId, model, config.dailyBudget, {
@@ -210,7 +242,7 @@ export async function generateJSON<T>(
         output: response.usageMetadata?.candidatesTokenCount ?? 0,
       });
 
-      const parsed = extractJson(response.text ?? "");
+      const parsed = extractJson(responseText(response));
       const result = schema.safeParse(parsed);
       if (result.success) return result.data;
 

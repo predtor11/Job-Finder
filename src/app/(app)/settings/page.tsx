@@ -32,6 +32,8 @@ interface SettingsPayload {
     aiDailyBudget: number;
     geminiApiKeyMasked: string | null;
     sendMode: "DRAFT" | "MANUAL" | "AUTO" | "SCHEDULED";
+    autoDraftEnabled: boolean;
+    autoDraftThreshold: number;
     dailyEmailLimit: number;
     minSendGapMinutes: number;
     sendJitterMinutes: number;
@@ -277,6 +279,34 @@ function SettingsContent() {
                     onChange={(e) => setS({ ...s, emailSignature: e.target.value })}
                   />
                 </div>
+
+                {/* Autopilot */}
+                <div className="flex items-center justify-between rounded-md border p-3 sm:col-span-2">
+                  <div>
+                    <p className="text-sm font-medium">
+                      Auto-draft applications for strong matches
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      After each discovery run, cover letters and emails are
+                      drafted for top-scoring jobs and wait in the Approval
+                      Queue. Nothing sends without your send rules.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={s.autoDraftEnabled}
+                    onCheckedChange={(v) => setS({ ...s, autoDraftEnabled: v })}
+                  />
+                </div>
+                {s.autoDraftEnabled && (
+                  <div className="space-y-1.5">
+                    <Label>Auto-draft above match score</Label>
+                    <Input
+                      type="number" min={0} max={100}
+                      value={s.autoDraftThreshold}
+                      onChange={(e) => setS({ ...s, autoDraftThreshold: Number(e.target.value) })}
+                    />
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -614,6 +644,8 @@ function SettingsContent() {
                 minSendGapMinutes: s.minSendGapMinutes,
                 sendJitterMinutes: s.sendJitterMinutes,
                 autoApproveThreshold: s.autoApproveThreshold,
+                autoDraftEnabled: s.autoDraftEnabled,
+                autoDraftThreshold: s.autoDraftThreshold,
                 emailSignature: s.emailSignature,
                 followUpAfterDays: s.followUpAfterDays,
                 secondFollowUpDays: s.secondFollowUpDays,
