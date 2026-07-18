@@ -49,7 +49,6 @@ interface SettingsPayload {
     workingHoursEnd: number;
     jobSources: Record<string, { enabled?: boolean; boards?: string[]; sites?: string[]; urls?: string[]; tags?: string[]; keywords?: string[] }> | null;
   };
-  serverGeminiKeyAvailable: boolean;
   gmailAccounts: Array<{
     id: string; email: string; status: string; lastSyncAt: string | null;
   }>;
@@ -299,11 +298,7 @@ function SettingsContent() {
                     <KeyRound
                       className={cn(
                         "size-4 shrink-0",
-                        s.geminiApiKeyMasked
-                          ? "text-success"
-                          : data?.serverGeminiKeyAvailable
-                            ? "text-warning"
-                            : "text-destructive"
+                        s.geminiApiKeyMasked ? "text-success" : "text-destructive"
                       )}
                     />
                     {s.geminiApiKeyMasked ? (
@@ -313,14 +308,10 @@ function SettingsContent() {
                           {s.geminiApiKeyMasked}
                         </span>
                       </span>
-                    ) : data?.serverGeminiKeyAvailable ? (
-                      <span className="text-muted-foreground">
-                        Using the app&apos;s <span className="font-medium text-foreground">shared key</span>{" "}
-                        — add your own for dedicated quota
-                      </span>
                     ) : (
                       <span className="text-destructive">
-                        No key configured — AI features are disabled until you add one
+                        No key configured — every account uses its own key, so
+                        all AI features are off until you add one
                       </span>
                     )}
                   </div>

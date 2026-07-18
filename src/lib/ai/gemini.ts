@@ -23,6 +23,16 @@ export class AiBudgetExceededError extends Error {
   }
 }
 
+/** Thrown when the user hasn't configured their own Gemini key yet. */
+export class AiKeyMissingError extends Error {
+  constructor() {
+    super(
+      "Add your own free Gemini API key in Settings → AI first — every account uses its own key."
+    );
+    this.name = "AiKeyMissingError";
+  }
+}
+
 interface UserAiConfig {
   apiKey: string;
   fastModel: string;
@@ -32,16 +42,13 @@ interface UserAiConfig {
 
 async function getUserAiConfig(userId: string): Promise<UserAiConfig> {
   const settings = await prisma.setting.findUnique({ where: { userId } });
-  const apiKey = settings?.geminiApiKeyEnc
-    ? decrypt(settings.geminiApiKeyEnc)
-    : env.geminiApiKey;
-  if (!apiKey) {
-    throw new Error(
-      "No Gemini API key configured. Add one in Settings → AI, or set GEMINI_API_KEY."
-    );
+  // Every account must bring its own key — there is deliberately no shared
+  // server fallback, so one user can never consume another's free-tier quota.
+  if (!settings?.geminiApiKeyEnc) {
+    throw new AiKeyMissingError();
   }
   return {
-    apiKey,
+    apiKey: decrypt(settings.geminiApiKeyEnc),
     fastModel: settings?.aiFastModel ?? env.geminiFastModel,
     smartModel: settings?.aiSmartModel ?? env.geminiSmartModel,
     dailyBudget: settings?.aiDailyBudget ?? 200,

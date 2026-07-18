@@ -27,9 +27,6 @@ export const env = {
   get supabaseServiceRoleKey() {
     return required("SUPABASE_SERVICE_ROLE_KEY");
   },
-  get geminiApiKey() {
-    return optional("GEMINI_API_KEY");
-  },
   get geminiFastModel() {
     return optional("GEMINI_FAST_MODEL", "gemini-flash-lite-latest");
   },

@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { getUser, UnauthorizedError } from "@/lib/supabase/server";
-import { AiBudgetExceededError } from "@/lib/ai/gemini";
+import { AiBudgetExceededError, AiKeyMissingError } from "@/lib/ai/gemini";
 
 /**
  * API route helpers — consistent auth, validation, and error envelopes.
@@ -52,6 +52,9 @@ export function errorResponse(error: unknown): NextResponse {
   }
   if (error instanceof AiBudgetExceededError) {
     return NextResponse.json({ error: error.message }, { status: 429 });
+  }
+  if (error instanceof AiKeyMissingError) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
   if (error instanceof Error) {
     // Domain errors thrown by engines are user-safe by convention.

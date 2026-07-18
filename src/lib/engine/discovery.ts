@@ -12,7 +12,7 @@ import {
 } from "@/lib/jobs/types";
 import { normalizeCompanyName, sha256 } from "@/lib/utils";
 import { analyzeJob } from "@/lib/ai/job-analyzer";
-import { AiBudgetExceededError } from "@/lib/ai/gemini";
+import { AiBudgetExceededError, AiKeyMissingError } from "@/lib/ai/gemini";
 import type { Job, Prisma } from "@prisma/client";
 
 /**
@@ -374,6 +374,12 @@ export async function runDiscovery(userId: string): Promise<DiscoveryResult> {
         } catch (error) {
           if (error instanceof AiBudgetExceededError) {
             progress.errors.push("AI budget reached — remaining jobs left unscored.");
+            break;
+          }
+          if (error instanceof AiKeyMissingError) {
+            progress.errors.push(
+              "No Gemini API key configured — add yours in Settings → AI to enable scoring."
+            );
             break;
           }
           // One bad posting must not stop the rest.
