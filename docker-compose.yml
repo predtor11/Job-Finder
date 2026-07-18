@@ -1,0 +1,34 @@
+# Local development stack: Redis (required by the worker) + the worker itself.
+# The Next.js app runs on the host with `npm run dev`.
+#
+#   docker compose up redis          # just Redis (worker on host: npm run worker:dev)
+#   docker compose up --build        # Redis + containerized worker
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis-data:

@@ -1,0 +1,733 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Job Finder — Prisma Schema (Supabase PostgreSQL)
+//
+// Conventions:
+//  • Every user-owned table carries `user_id uuid` referencing auth.users(id).
+//    RLS policies (see supabase/migrations) scope all rows to auth.uid().
+//  • Prisma connects via the service role and is only used in trusted server
+//    code; RLS is defense-in-depth for the PostgREST/Realtime surface.
+//  • snake_case @@map/@map so raw SQL, policies and the Supabase dashboard
+//    stay idiomatic while application code uses camelCase.
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ═══════════════════════════════════════════ Users & Settings ═══════════════
+
+/// Mirrors auth.users — created by a Postgres trigger on signup.
+model Profile {
+  id        String   @id @db.Uuid // = auth.users.id
+  email     String   @unique
+  fullName  String?  @map("full_name")
+  phone     String?
+  headline  String?
+  portfolio String?
+  github    String?
+  linkedin  String?
+  website   String?
+  avatarUrl String?  @map("avatar_url")
+  onboarded Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  settings      Setting?
+  gmailAccounts GmailAccount[]
+  resumes       Resume[]
+  companies     Company[]
+  jobs          Job[]
+  recruiters    Recruiter[]
+  applications  Application[]
+  coverLetters  CoverLetter[]
+  templates     EmailTemplate[]
+  emails        Email[]
+  threads       EmailThread[]
+  messages      EmailMessage[]
+  jobSearches   JobSearch[]
+  notifications Notification[]
+  snapshots     AnalyticsSnapshot[]
+  quotas        EmailQuota[]
+  aiUsage       AiUsage[]
+  logs          ActivityLog[]
+  backgroundJobs BackgroundJob[]
+
+  @@map("profiles")
+}
+
+/// Per-user configuration singleton.
+model Setting {
+  id     String @id @default(cuid())
+  userId String @unique @map("user_id") @db.Uuid
+  user   Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // AI
+  geminiApiKeyEnc String? @map("gemini_api_key_enc") /// AES-256-GCM encrypted; falls back to server GEMINI_API_KEY
+  aiFastModel     String  @default("gemini-flash-lite-latest") @map("ai_fast_model")
+  aiSmartModel    String  @default("gemini-flash-latest") @map("ai_smart_model")
+  aiDailyBudget   Int     @default(200) @map("ai_daily_budget") /// max Gemini calls/day (free-tier guard)
+
+  // Email sending
+  sendMode             SendMode @default(MANUAL) @map("send_mode")
+  dailyEmailLimit      Int      @default(50) @map("daily_email_limit")
+  minSendGapMinutes    Int      @default(8) @map("min_send_gap_minutes") /// minimum gap between sends
+  sendJitterMinutes    Int      @default(7) @map("send_jitter_minutes") /// random jitter added per send
+  autoApproveThreshold Int      @default(80) @map("auto_approve_threshold") /// match score needed for AUTO mode
+  emailSignature       String?  @map("email_signature")
+
+  // Follow-ups
+  followUpAfterDays  Int     @default(5) @map("follow_up_after_days")
+  secondFollowUpDays Int     @default(7) @map("second_follow_up_days") /// days after first follow-up
+  maxFollowUps       Int     @default(2) @map("max_follow_ups")
+  autoSendFollowUps  Boolean @default(false) @map("auto_send_follow_ups") /// drafts only unless explicitly enabled
+
+  // Preferences
+  preferredRoles     String[] @map("preferred_roles")
+  preferredLocations String[] @map("preferred_locations")
+  preferredTech      String[] @map("preferred_tech")
+  timezone           String   @default("Asia/Kolkata")
+  workingHoursStart  Int      @default(9) @map("working_hours_start") /// 0-23, user TZ
+  workingHoursEnd    Int      @default(19) @map("working_hours_end")
+  workingDays        Int[]    @default([1, 2, 3, 4, 5]) @map("working_days") /// 0=Sun … 6=Sat
+
+  // Discovery
+  jobSources        Json?    @map("job_sources") /// per-source enable/config, see JobSourceConfig type
+  discoveryInterval Int      @default(4) @map("discovery_interval_hours")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}
+
+enum SendMode {
+  DRAFT     /// generate drafts only, never queue
+  MANUAL    /// every email requires explicit approval
+  AUTO      /// auto-approve applications above threshold (cold outreach still manual)
+  SCHEDULED /// approved manually, sent at a chosen time
+}
+
+/// Connected Gmail account. Tokens are AES-256-GCM encrypted — never plaintext.
+model GmailAccount {
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id") @db.Uuid
+  user             Profile   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email            String
+  accessTokenEnc   String    @map("access_token_enc")
+  refreshTokenEnc  String    @map("refresh_token_enc")
+  tokenExpiresAt   DateTime? @map("token_expires_at")
+  scopes           String[]
+  historyId        String?   @map("history_id") /// Gmail incremental sync cursor
+  lastSyncAt       DateTime? @map("last_sync_at")
+  status           GmailStatus @default(CONNECTED)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@unique([userId, email])
+  @@map("gmail_accounts")
+}
+
+enum GmailStatus {
+  CONNECTED
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+// ═══════════════════════════════════════════ Resumes ════════════════════════
+
+model Resume {
+  id          String       @id @default(cuid())
+  userId      String       @map("user_id") @db.Uuid
+  user        Profile      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label       String       /// e.g. "Backend Engineer", "AI Engineer"
+  fileName    String       @map("file_name")
+  storagePath String       @map("storage_path") /// Supabase Storage: resumes/{userId}/{id}/{fileName}
+  mimeType    String       @map("mime_type")
+  sizeBytes   Int          @map("size_bytes")
+  rawText     String?      @map("raw_text")
+  isDefault   Boolean      @default(false) @map("is_default")
+  parseStatus ParseStatus  @default(PENDING) @map("parse_status")
+  parseError  String?      @map("parse_error")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  profile      ResumeProfile?
+  applications Application[]
+  coverLetters CoverLetter[]
+
+  @@map("resumes")
+}
+
+enum ParseStatus {
+  PENDING
+  PARSING
+  PARSED
+  FAILED
+}
+
+/// AI-extracted structured profile for one resume.
+model ResumeProfile {
+  id       String @id @default(cuid())
+  resumeId String @unique @map("resume_id")
+  resume   Resume @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+
+  name           String?
+  email          String?
+  phone          String?
+  portfolio      String?
+  github         String?
+  linkedin       String?
+  website        String?
+  summary        String?
+  education      Json?    /// [{ institution, degree, field, start, end, grade }]
+  experience     Json?    /// [{ company, title, start, end, location, highlights[] }]
+  projects       Json?    /// [{ name, description, technologies[], url }]
+  certifications Json?    /// [{ name, issuer, year }]
+  skills         String[]
+  technologies   String[]
+  keywords       String[]
+  achievements   String[]
+  preferredRoles String[] @map("preferred_roles")
+  preferredLocations String[] @map("preferred_locations")
+  yearsOfExperience  Float?  @map("years_of_experience")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("resume_profiles")
+}
+
+// ═══════════════════════════════════════════ Jobs & Companies ═══════════════
+
+model Company {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id") @db.Uuid
+  user        Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  normalized  String   /// lowercased, trimmed — dedupe key
+  domain      String?
+  website     String?
+  careersUrl  String?  @map("careers_url")
+  logoUrl     String?  @map("logo_url")
+  description String?
+  industry    String?
+  size        String?
+  location    String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  jobs         Job[]
+  recruiters   Recruiter[]
+  applications Application[]
+
+  @@unique([userId, normalized])
+  @@map("companies")
+}
+
+enum JobSource {
+  REMOTEOK
+  HN_WHO_IS_HIRING
+  GREENHOUSE
+  LEVER
+  ASHBY
+  CAREER_PAGE
+  LINKEDIN_IMPORT
+  WELLFOUND_IMPORT
+  MANUAL
+  OTHER
+}
+
+enum JobStatus {
+  NEW
+  ANALYZED
+  SHORTLISTED
+  APPLIED
+  ARCHIVED
+  DISMISSED
+}
+
+model Job {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id") @db.Uuid
+  user            Profile   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId       String?   @map("company_id")
+  company         Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  source          JobSource
+  sourceId        String?   @map("source_id") /// id at origin (e.g. greenhouse job id)
+  fingerprint     String    /// sha256(url | company+title+location) — dedupe key
+  url             String?
+  title           String
+  description     String?
+  location        String?
+  remote          Boolean   @default(false)
+  employmentType  String?   @map("employment_type")
+  experienceLevel String?   @map("experience_level")
+  salaryMin       Int?      @map("salary_min")
+  salaryMax       Int?      @map("salary_max")
+  salaryCurrency  String?   @map("salary_currency")
+  techStack       String[]  @map("tech_stack")
+  skills          String[]
+  requirements    String[]
+  responsibilities String[]
+  postedAt        DateTime? @map("posted_at")
+  discoveredAt    DateTime  @default(now()) @map("discovered_at")
+  status          JobStatus @default(NEW)
+  raw             Json?     /// original payload from the source
+
+  analysis     JobAnalysis?
+  applications Application[]
+  recruiters   Recruiter[]
+  coverLetters CoverLetter[]
+
+  @@unique([userId, fingerprint])
+  @@index([userId, status, discoveredAt])
+  @@index([userId, source])
+  @@map("jobs")
+}
+
+/// AI analysis of a job against the user's resume library.
+model JobAnalysis {
+  id            String   @id @default(cuid())
+  jobId         String   @unique @map("job_id")
+  job           Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  matchScore    Int      @map("match_score") /// 0-100, for the best resume
+  bestResumeId  String?  @map("best_resume_id")
+  resumeScores  Json?    @map("resume_scores") /// [{ resumeId, score, reasons }]
+  missingSkills String[] @map("missing_skills")
+  strengths     String[]
+  weaknesses    String[]
+  resumeSuggestions String[] @map("resume_suggestions")
+  hiringContact Json?    @map("hiring_contact") /// contact named in the posting itself
+  model         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("job_analyses")
+}
+
+// ═══════════════════════════════════════════ Recruiters ═════════════════════
+
+enum RecruiterSourceType {
+  JOB_POSTING     /// contact listed in the job posting itself
+  CAREERS_PAGE
+  TEAM_PAGE
+  COMPANY_CONTACT /// public company contact page
+  PUBLIC_PROFILE  /// public recruiter profile the user linked
+  MANUAL
+}
+
+model Recruiter {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id") @db.Uuid
+  user        Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId   String?  @map("company_id")
+  company     Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  jobId       String?  @map("job_id")
+  job         Job?     @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  name        String
+  role        String?
+  email       String?  /// only ever a publicly listed address
+  linkedinUrl String?  @map("linkedin_url")
+  sourceUrl   String   @map("source_url") /// where this contact was found — always shown in UI
+  sourceType  RecruiterSourceType @map("source_type")
+  confidence  Float    @default(0.5) /// 0-1 — how sure discovery is that this is a hiring contact
+  verified    Boolean  @default(false) /// user confirmed the contact
+  notes       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  emails       Email[]
+  applications Application[]
+
+  @@index([userId, companyId])
+  @@map("recruiters")
+}
+
+// ═══════════════════════════════════════════ Applications (CRM) ═════════════
+
+enum ApplicationStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SCHEDULED
+  SENT
+  REPLIED
+  INTERVIEW
+  ASSESSMENT
+  OFFER
+  REJECTED
+  GHOSTED
+  WITHDRAWN
+}
+
+model Application {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id") @db.Uuid
+  user        Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId       String   @map("job_id")
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  companyId   String?  @map("company_id")
+  company     Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  recruiterId String?  @map("recruiter_id")
+  recruiter   Recruiter? @relation(fields: [recruiterId], references: [id], onDelete: SetNull)
+  resumeId    String?  @map("resume_id")
+  resume      Resume?  @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+
+  status      ApplicationStatus @default(DRAFT)
+  matchScore  Int?     @map("match_score")
+  appliedAt   DateTime? @map("applied_at")
+  notes       String?
+
+  // Follow-up tracking
+  followUpCount    Int       @default(0) @map("follow_up_count")
+  firstFollowUpAt  DateTime? @map("first_follow_up_at")
+  secondFollowUpAt DateTime? @map("second_follow_up_at")
+  lastContactAt    DateTime? @map("last_contact_at")
+  nextFollowUpDue  DateTime? @map("next_follow_up_due")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  coverLetters CoverLetter[]
+  emails       Email[]
+  threads      EmailThread[]
+  events       ApplicationEvent[]
+
+  @@unique([userId, jobId])
+  @@index([userId, status])
+  @@index([userId, nextFollowUpDue])
+  @@map("applications")
+}
+
+enum ApplicationEventType {
+  JOB_FOUND
+  DRAFT_CREATED
+  APPROVED
+  EMAIL_SENT
+  REPLY_RECEIVED
+  INTERVIEW
+  ASSESSMENT
+  OFFER
+  REJECTED
+  FOLLOW_UP_SENT
+  STATUS_CHANGE
+  NOTE
+}
+
+/// Timeline entries powering the application detail view.
+model ApplicationEvent {
+  id            String   @id @default(cuid())
+  applicationId String   @map("application_id")
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  type          ApplicationEventType
+  title         String
+  payload       Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([applicationId, createdAt])
+  @@map("application_events")
+}
+
+// ═══════════════════════════════════════════ Content ════════════════════════
+
+model CoverLetter {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id") @db.Uuid
+  user          Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applicationId String?  @map("application_id")
+  application   Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  jobId         String?  @map("job_id")
+  job           Job?     @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  resumeId      String?  @map("resume_id")
+  resume        Resume?  @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  content       String   /// AI-generated
+  editedContent String?  @map("edited_content") /// user edits win over `content`
+  model         String?
+  version       Int      @default(1)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("cover_letters")
+}
+
+enum EmailType {
+  APPLICATION
+  COLD_OUTREACH
+  FOLLOW_UP
+  REPLY
+  OTHER
+}
+
+enum EmailStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  QUEUED     /// approved + scheduledAt assigned
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+enum EmailDirection {
+  OUTBOUND
+  INBOUND
+}
+
+model EmailTemplate {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id") @db.Uuid
+  user      Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  type      EmailType
+  subject   String
+  body      String   /// supports {{variables}}
+  abGroup   String?  @map("ab_group") /// templates sharing a group are A/B tested
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  emails Email[]
+
+  @@map("email_templates")
+}
+
+model Email {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id") @db.Uuid
+  user          Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applicationId String?  @map("application_id")
+  application   Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  recruiterId   String?  @map("recruiter_id")
+  recruiter     Recruiter? @relation(fields: [recruiterId], references: [id], onDelete: SetNull)
+  templateId    String?  @map("template_id")
+  template      EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  type      EmailType
+  direction EmailDirection @default(OUTBOUND)
+  status    EmailStatus    @default(DRAFT)
+
+  toEmail   String  @map("to_email")
+  toName    String? @map("to_name")
+  subject   String
+  bodyText  String  @map("body_text")
+  bodyHtml  String? @map("body_html")
+  attachResume Boolean @default(true) @map("attach_resume")
+  abVariant String? @map("ab_variant")
+  contentHash String? @map("content_hash") /// fingerprint to enforce wording uniqueness
+
+  scheduledAt DateTime? @map("scheduled_at")
+  sentAt      DateTime? @map("sent_at")
+  error       String?
+  model       String?
+
+  gmailMessageId String? @map("gmail_message_id")
+  gmailThreadId  String? @map("gmail_thread_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, status, scheduledAt])
+  @@index([userId, type])
+  @@map("emails")
+}
+
+model EmailThread {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id") @db.Uuid
+  user          Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applicationId String?  @map("application_id")
+  application   Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  gmailThreadId String   @map("gmail_thread_id")
+  subject       String?
+  lastMessageAt DateTime? @map("last_message_at")
+  unreadCount   Int      @default(0) @map("unread_count")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  messages EmailMessage[]
+
+  @@unique([userId, gmailThreadId])
+  @@map("email_threads")
+}
+
+enum MessageClassification {
+  REPLY
+  INTERVIEW_REQUEST
+  ASSESSMENT
+  REJECTION
+  OFFER
+  QUESTION
+  FOLLOW_UP_REQUEST
+  AUTO_REPLY
+  OTHER
+}
+
+/// Individual Gmail messages inside tracked threads (mostly inbound replies).
+model EmailMessage {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id") @db.Uuid
+  user           Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  threadId       String   @map("thread_id")
+  thread         EmailThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  gmailMessageId String   @map("gmail_message_id")
+  direction      EmailDirection
+  fromEmail      String   @map("from_email")
+  fromName       String?  @map("from_name")
+  toEmail        String?  @map("to_email")
+  subject        String?
+  snippet        String?
+  bodyText       String?  @map("body_text")
+  receivedAt     DateTime @map("received_at")
+  classification MessageClassification?
+  classificationConfidence Float? @map("classification_confidence")
+  processed      Boolean  @default(false) /// pipeline reacted to this message
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, gmailMessageId])
+  @@index([userId, processed])
+  @@map("email_messages")
+}
+
+// ═══════════════════════════════════════════ Search, Notify, Ops ════════════
+
+model JobSearch {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id") @db.Uuid
+  user          Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  filters       Json     /// { title?, location?, remote?, salaryMin?, experience?, company?, techStack?[], sources?[] }
+  notifyOnMatch Boolean  @default(true) @map("notify_on_match")
+  lastRunAt     DateTime? @map("last_run_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("job_searches")
+}
+
+enum NotificationType {
+  NEW_JOBS
+  REPLY_RECEIVED
+  INTERVIEW
+  FOLLOW_UP_DUE
+  RECRUITER_FOUND
+  QUOTA
+  SYSTEM
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id") @db.Uuid
+  user      Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String?
+  link      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, read, createdAt])
+  @@map("notifications")
+}
+
+/// Daily per-user metric rollups (computed nightly + on demand).
+model AnalyticsSnapshot {
+  id               String   @id @default(cuid())
+  userId           String   @map("user_id") @db.Uuid
+  user             Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date             DateTime @db.Date
+  jobsFound        Int @default(0) @map("jobs_found")
+  applicationsSent Int @default(0) @map("applications_sent")
+  replies          Int @default(0)
+  interviews       Int @default(0)
+  assessments      Int @default(0)
+  rejections       Int @default(0)
+  offers           Int @default(0)
+  followUpsSent    Int @default(0) @map("follow_ups_sent")
+  emailsSent       Int @default(0) @map("emails_sent")
+  extra            Json? /// e.g. per-company, per-resume, per-template breakdowns
+
+  @@unique([userId, date])
+  @@map("analytics_snapshots")
+}
+
+/// Atomic daily send counter — the hard cap behind "max 50 emails/day".
+model EmailQuota {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id") @db.Uuid
+  user      Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  sentCount Int      @default(0) @map("sent_count")
+
+  @@unique([userId, date])
+  @@map("email_quotas")
+}
+
+/// Gemini call accounting — keeps usage inside the free tier.
+model AiUsage {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id") @db.Uuid
+  user      Profile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  model     String
+  calls     Int      @default(0)
+  inputTokens  Int   @default(0) @map("input_tokens")
+  outputTokens Int   @default(0) @map("output_tokens")
+
+  @@unique([userId, date, model])
+  @@map("ai_usage")
+}
+
+enum BackgroundJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Mirror of queue work for observability (BullMQ holds the live state in Redis).
+model BackgroundJob {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id") @db.Uuid
+  user       Profile? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  queue      String
+  name       String
+  payload    Json?
+  status     BackgroundJobStatus @default(PENDING)
+  attempts   Int      @default(0)
+  error      String?
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([queue, status, createdAt])
+  @@map("background_jobs")
+}
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id") @db.Uuid
+  user      Profile? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  level     LogLevel @default(INFO)
+  event     String   /// machine-readable, e.g. "email.sent", "discovery.run"
+  message   String
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, event, createdAt])
+  @@map("activity_logs")
+}
