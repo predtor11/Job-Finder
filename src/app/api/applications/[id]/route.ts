@@ -48,12 +48,18 @@ export const PATCH = withAuth<Params>(async ({ request, userId, params }) => {
   if (!existing)
     return NextResponse.json({ error: "Application not found" }, { status: 404 });
 
+  // Manually marking as SENT = "I applied via the company's portal".
+  const portalApplied = body.status === "SENT" && !existing.appliedAt;
+
   const application = await prisma.application.update({
     where: { id: existing.id },
     data: {
       ...(body.status ? { status: body.status } : {}),
       ...(body.notes !== undefined ? { notes: body.notes } : {}),
       ...(body.resumeId ? { resumeId: body.resumeId } : {}),
+      ...(portalApplied
+        ? { appliedAt: new Date(), lastContactAt: new Date() }
+        : {}),
     },
   });
 
@@ -61,8 +67,10 @@ export const PATCH = withAuth<Params>(async ({ request, userId, params }) => {
     await prisma.applicationEvent.create({
       data: {
         applicationId: application.id,
-        type: "STATUS_CHANGE",
-        title: `Status changed: ${existing.status} → ${body.status}`,
+        type: portalApplied ? "EMAIL_SENT" : "STATUS_CHANGE",
+        title: portalApplied
+          ? "Applied via company portal"
+          : `Status changed: ${existing.status} → ${body.status}`,
       },
     });
   }

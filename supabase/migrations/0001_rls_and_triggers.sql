@@ -202,9 +202,10 @@ do $$
 declare
   t text;
 begin
+  -- NOTE: 'jobs' is deliberately absent — it has no updated_at column.
   foreach t in array array[
     'profiles', 'settings', 'gmail_accounts', 'resumes', 'resume_profiles',
-    'companies', 'jobs', 'job_analyses', 'recruiters', 'applications',
+    'companies', 'job_analyses', 'recruiters', 'applications',
     'cover_letters', 'email_templates', 'emails', 'email_threads',
     'job_searches'
   ]

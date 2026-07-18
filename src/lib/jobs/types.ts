@@ -67,22 +67,28 @@ export async function fetchJson<T>(
   return res.json() as Promise<T>;
 }
 
-/** Strip HTML to readable text (descriptions from board APIs are HTML). */
+/**
+ * Strip HTML to readable text (descriptions from board APIs are HTML).
+ * Runs two passes: sources like the Algolia HN API deliver double-escaped
+ * entities (&amp;#x2F;) and escaped tags (&lt;p&gt;) — pass one unwraps them,
+ * pass two strips/decodes what that revealed. Idempotent on clean input.
+ */
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<\s*(br|\/p|\/div|\/li|\/h[1-6])\s*\/?\s*>/gi, "\n")
-    .replace(/<p[^>]*>/gi, "\n")
-    .replace(/<li[^>]*>/gi, "• ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    // Numeric entities (&#x2F; &#39; …) — HN comments are full of them.
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  let text = html;
+  for (let pass = 0; pass < 2; pass++) {
+    text = text
+      .replace(/<\s*(br|\/p|\/div|\/li|\/h[1-6])\s*\/?\s*>/gi, "\n")
+      .replace(/<p[^>]*>/gi, "\n")
+      .replace(/<li[^>]*>/gi, "• ")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+      .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&apos;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, "&");
+  }
+  return text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }

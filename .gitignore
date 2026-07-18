@@ -42,3 +42,6 @@ yarn-error.log*
 
 # uploads / local scratch
 /tmp
+
+.vercel
+.env*

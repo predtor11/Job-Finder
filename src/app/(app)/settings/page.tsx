@@ -2,7 +2,14 @@
 
 import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { CheckCircle2, Loader2, Mail, Unplug } from "lucide-react";
+import {
+  CheckCircle2, ChevronDown, ExternalLink, KeyRound, Loader2, Mail,
+  ShieldCheck, Unplug,
+} from "lucide-react";
+import {
+  Collapsible, CollapsibleContent, CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { cn } from "@/lib/utils";
 import { Topbar } from "@/components/layout/topbar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,10 +49,31 @@ interface SettingsPayload {
     workingHoursEnd: number;
     jobSources: Record<string, { enabled?: boolean; boards?: string[]; sites?: string[]; urls?: string[]; tags?: string[]; keywords?: string[] }> | null;
   };
+  serverGeminiKeyAvailable: boolean;
   gmailAccounts: Array<{
     id: string; email: string; status: string; lastSyncAt: string | null;
   }>;
 }
+
+const API_KEY_STEPS = [
+  {
+    title: "Open Google AI Studio",
+    body: "Sign in with any Google account — no billing or credit card needed for the free tier.",
+    link: { href: "https://aistudio.google.com/apikey", label: "aistudio.google.com/apikey" },
+  },
+  {
+    title: "Click “Create API key”",
+    body: "If asked, let it create a new Google Cloud project for you — the default option is fine.",
+  },
+  {
+    title: "Copy the generated key",
+    body: "It looks like “AIza…” — copy it right away; you can always create another one later.",
+  },
+  {
+    title: "Paste it below and save",
+    body: "The key is encrypted before it's stored, is only ever used server-side for your account, and you can remove it anytime.",
+  },
+];
 
 function SettingsContent() {
   const params = useSearchParams();
@@ -260,11 +288,115 @@ function SettingsContent() {
               <CardHeader>
                 <CardTitle className="text-base">Gemini API</CardTitle>
                 <CardDescription>
-                  Get a free key at aistudio.google.com/apikey. Your key is
-                  encrypted at rest{s.geminiApiKeyMasked ? ` — current: ${s.geminiApiKeyMasked}` : ""}.
+                  All AI features (resume parsing, job scoring, email drafting)
+                  run on Google&apos;s Gemini — the free tier is enough.
                 </CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 sm:grid-cols-2">
+                {/* Which key is in use right now */}
+                <div className="flex items-center justify-between gap-3 rounded-md border p-3 sm:col-span-2">
+                  <div className="flex items-center gap-2.5 text-sm">
+                    <KeyRound
+                      className={cn(
+                        "size-4 shrink-0",
+                        s.geminiApiKeyMasked
+                          ? "text-success"
+                          : data?.serverGeminiKeyAvailable
+                            ? "text-warning"
+                            : "text-destructive"
+                      )}
+                    />
+                    {s.geminiApiKeyMasked ? (
+                      <span>
+                        Using <span className="font-medium">your key</span>{" "}
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {s.geminiApiKeyMasked}
+                        </span>
+                      </span>
+                    ) : data?.serverGeminiKeyAvailable ? (
+                      <span className="text-muted-foreground">
+                        Using the app&apos;s <span className="font-medium text-foreground">shared key</span>{" "}
+                        — add your own for dedicated quota
+                      </span>
+                    ) : (
+                      <span className="text-destructive">
+                        No key configured — AI features are disabled until you add one
+                      </span>
+                    )}
+                  </div>
+                  {s.geminiApiKeyMasked && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 shrink-0 text-xs text-destructive"
+                      onClick={() => save.mutate({ geminiApiKey: null })}
+                    >
+                      Remove my key
+                    </Button>
+                  )}
+                </div>
+
+                {/* Step-by-step guide */}
+                <Collapsible className="sm:col-span-2">
+                  <CollapsibleTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="group w-full justify-between font-normal"
+                    >
+                      <span className="flex items-center gap-2">
+                        <ShieldCheck className="size-4 text-primary" />
+                        How to create your own free API key (2 minutes)
+                      </span>
+                      <ChevronDown className="size-4 transition-transform group-data-[state=open]:rotate-180" />
+                    </Button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div className="mt-3 rounded-md border bg-muted/30 p-4">
+                      <div className="relative space-y-5 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-border">
+                        {API_KEY_STEPS.map((step, i) => (
+                          <div key={i} className="relative flex gap-3">
+                            <div className="z-10 flex size-6 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-semibold text-primary">
+                              {i + 1}
+                            </div>
+                            <div className="min-w-0 pt-0.5">
+                              <p className="text-sm font-medium leading-none">
+                                {step.title}
+                              </p>
+                              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                                {step.body}
+                              </p>
+                              {step.link && (
+                                <Button
+                                  asChild
+                                  size="sm"
+                                  variant="outline"
+                                  className="mt-1.5 h-7 text-xs"
+                                >
+                                  <a
+                                    href={step.link.href}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    <ExternalLink className="size-3" />
+                                    {step.link.label}
+                                  </a>
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-4 border-t pt-3 text-[11px] leading-relaxed text-muted-foreground">
+                        Why use your own key? The free tier&apos;s rate limits
+                        apply per key — with your own, discovery scoring and
+                        email drafting never compete with anyone else. Revoke it
+                        anytime at aistudio.google.com/apikey; stored copies are
+                        AES-256 encrypted and never sent to the browser.
+                      </p>
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
+
                 <div className="space-y-1.5 sm:col-span-2">
                   <Label>API key {s.geminiApiKeyMasked ? "(leave blank to keep)" : ""}</Label>
                   <Input

@@ -29,6 +29,8 @@ export const GET = withAuth(async ({ userId }) => {
         ? maskSecret(decrypt(settings.geminiApiKeyEnc))
         : null,
     },
+    /** Whether the deployment has a shared GEMINI_API_KEY fallback. */
+    serverGeminiKeyAvailable: Boolean(process.env.GEMINI_API_KEY),
     gmailAccounts,
     profile,
   });

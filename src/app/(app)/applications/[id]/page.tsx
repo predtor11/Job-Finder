@@ -3,7 +3,8 @@
 import { use, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft, Check, CircleDot, FileText, Mail, MessageSquare, Pencil, X,
+  ArrowLeft, Check, CircleDot, ExternalLink, FileText, Mail, MessageSquare,
+  Pencil, Send, X,
 } from "lucide-react";
 import { format } from "date-fns";
 import { Topbar } from "@/components/layout/topbar";
@@ -80,10 +81,13 @@ export default function ApplicationDetailPage({
   const [editSubject, setEditSubject] = useState("");
   const [editBody, setEditBody] = useState("");
   const [notes, setNotes] = useState<string | null>(null);
+  const [manualEmail, setManualEmail] = useState("");
+  const [manualName, setManualName] = useState("");
 
-  const { data, isLoading } = useApiQuery<{ application: ApplicationDetail }>(
+  const { data, isLoading, error } = useApiQuery<{ application: ApplicationDetail }>(
     ["application", id],
-    `/api/applications/${id}`
+    `/api/applications/${id}`,
+    { retry: false }
   );
   const app = data?.application;
 
@@ -118,6 +122,31 @@ export default function ApplicationDetailPage({
     invalidate: [["application", id]],
     successMessage: "Notes saved",
   });
+  const generateToRecipient = useApiMutation<void>(
+    "POST",
+    () => `/api/applications/${id}/email`,
+    {
+      body: () => ({
+        toEmail: manualEmail.trim(),
+        ...(manualName.trim() ? { toName: manualName.trim() } : {}),
+      }),
+      invalidate: [["application", id], ["emails"]],
+      successMessage: "Email drafted — review and approve it below",
+      onSuccess: () => {
+        setManualEmail("");
+        setManualName("");
+      },
+    }
+  );
+  const markPortalApplied = useApiMutation<void>(
+    "PATCH",
+    () => `/api/applications/${id}`,
+    {
+      body: () => ({ status: "SENT" }),
+      invalidate: [["application", id], ["applications"], ["analytics"]],
+      successMessage: "Marked as applied — replies and follow-ups are tracked from today",
+    }
+  );
 
   return (
     <>
@@ -129,7 +158,14 @@ export default function ApplicationDetailPage({
           </Link>
         </Button>
 
-        {isLoading || !app ? (
+        {error ? (
+          <div className="flex h-64 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center">
+            <p className="text-sm font-medium">Application not found</p>
+            <Button asChild size="sm" variant="outline" className="mt-1">
+              <Link href="/applications">Back to applications</Link>
+            </Button>
+          </div>
+        ) : isLoading || !app ? (
           <Skeleton className="h-96 w-full" />
         ) : (
           <>
@@ -170,10 +206,76 @@ export default function ApplicationDetailPage({
 
                   <TabsContent value="emails" className="mt-3 space-y-3">
                     {app.emails.length === 0 && (
-                      <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                        No emails yet. If no recruiter email was found, discover
-                        contacts on the job page or add one manually.
-                      </p>
+                      <Card className="gap-3 py-4">
+                        <CardHeader className="px-4">
+                          <CardTitle className="text-sm">
+                            No contact email found — two ways to proceed
+                          </CardTitle>
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            Most companies don&apos;t publish recruiter emails.
+                            Either send the email to an address you found in the
+                            posting or on a public page, or apply on the company
+                            site and track it here.
+                          </p>
+                        </CardHeader>
+                        <CardContent className="space-y-4 px-4">
+                          <div className="space-y-2">
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              <Input
+                                type="email"
+                                placeholder="recruiter@company.com"
+                                value={manualEmail}
+                                onChange={(e) => setManualEmail(e.target.value)}
+                              />
+                              <Input
+                                placeholder="Their name (optional)"
+                                value={manualName}
+                                onChange={(e) => setManualName(e.target.value)}
+                              />
+                            </div>
+                            <Button
+                              size="sm"
+                              disabled={
+                                !/^\S+@\S+\.\S+$/.test(manualEmail.trim()) ||
+                                generateToRecipient.isPending
+                              }
+                              onClick={() => generateToRecipient.mutate()}
+                            >
+                              <Mail className="size-3.5" />
+                              {generateToRecipient.isPending
+                                ? "Drafting…"
+                                : "Generate email draft to this address"}
+                            </Button>
+                          </div>
+
+                          <div className="border-t pt-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {app.job.url && (
+                                <Button asChild size="sm" variant="outline">
+                                  <a href={app.job.url} target="_blank" rel="noreferrer">
+                                    <ExternalLink className="size-3.5" />
+                                    Apply on company site
+                                  </a>
+                                </Button>
+                              )}
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={markPortalApplied.isPending || app.status === "SENT"}
+                                onClick={() => markPortalApplied.mutate()}
+                              >
+                                <Send className="size-3.5" />
+                                I applied via the portal — mark as applied
+                              </Button>
+                            </div>
+                            <p className="mt-1.5 text-[11px] text-muted-foreground">
+                              Use the generated cover letter from the tab above.
+                              Marking as applied starts reply tracking and
+                              follow-up reminders for this application.
+                            </p>
+                          </div>
+                        </CardContent>
+                      </Card>
                     )}
                     {app.emails.map((email) => (
                       <Card key={email.id} className="gap-2 py-4">

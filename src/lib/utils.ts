@@ -43,6 +43,27 @@ export function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max - 1).trimEnd() + "…";
 }
 
+/**
+ * Extract contact email addresses literally present in text (job postings).
+ * Deterministic — this is the anti-hallucination guarantee for contacts:
+ * an address can only come from the posting text itself.
+ */
+export function extractEmails(text: string): string[] {
+  const matches = text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) ?? [];
+  const seen = new Set<string>();
+  const emails: string[] = [];
+  for (const raw of matches) {
+    const email = raw.toLowerCase().replace(/^[.-]+|[.-]+$/g, "");
+    if (seen.has(email)) continue;
+    if (/\.(png|jpe?g|gif|svg|webp)$/.test(email)) continue;
+    if (/no-?reply|donotreply|example\.(com|org)|sentry|@.*\.(js|ts|css)$/.test(email)) continue;
+    seen.add(email);
+    emails.push(email);
+    if (emails.length >= 3) break;
+  }
+  return emails;
+}
+
 /** Format a salary range like "$120k – $160k". */
 export function formatSalary(
   min?: number | null,

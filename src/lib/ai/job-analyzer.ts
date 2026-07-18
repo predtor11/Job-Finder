@@ -2,6 +2,7 @@ import { z } from "zod";
 import { generateJSON } from "@/lib/ai/gemini";
 import { prisma } from "@/lib/prisma";
 import { profileToPromptContext } from "@/lib/ai/resume-parser";
+import { extractEmails } from "@/lib/utils";
 
 /**
  * Job Analyzer — two fast-model passes:
@@ -115,8 +116,10 @@ export async function analyzeJob(userId: string, jobId: string) {
   const job = await prisma.job.findFirst({ where: { id: jobId, userId } });
   if (!job) throw new Error("Job not found");
 
+  let contactName: string | null = null;
   if (job.description && job.skills.length === 0) {
     const fields = await extractJobFields(userId, job.description);
+    contactName = fields.hiringContact?.name ?? null;
     await prisma.job.update({
       where: { id: job.id },
       data: {
@@ -133,7 +136,50 @@ export async function analyzeJob(userId: string, jobId: string) {
     });
   }
 
+  await persistPostingContacts(userId, job.id, contactName);
+
   return analyzeJobFit(userId, jobId);
+}
+
+/**
+ * Store contact emails that appear literally in the posting text as
+ * Recruiter rows (source: JOB_POSTING). Regex-based — never AI-invented.
+ * HN Who-is-Hiring posts in particular almost always include one.
+ */
+export async function persistPostingContacts(
+  userId: string,
+  jobId: string,
+  contactName?: string | null
+): Promise<number> {
+  const job = await prisma.job.findFirst({
+    where: { id: jobId, userId },
+    select: { id: true, description: true, url: true, companyId: true },
+  });
+  if (!job?.description) return 0;
+
+  const emails = extractEmails(job.description).slice(0, 2);
+  let created = 0;
+  for (const email of emails) {
+    const exists = await prisma.recruiter.findFirst({
+      where: { userId, email: { equals: email, mode: "insensitive" } },
+      select: { id: true },
+    });
+    if (exists) continue;
+    await prisma.recruiter.create({
+      data: {
+        userId,
+        companyId: job.companyId,
+        jobId: job.id,
+        name: contactName ?? "Hiring contact (listed in posting)",
+        email,
+        sourceUrl: job.url ?? "job posting text",
+        sourceType: "JOB_POSTING",
+        confidence: 0.85,
+      },
+    });
+    created++;
+  }
+  return created;
 }
 
 /**

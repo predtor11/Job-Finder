@@ -62,3 +62,60 @@ describe("jobMatchesFilters (saved searches)", () => {
     ).toBe(false);
   });
 });
+
+describe("buildPreferenceFilter (discovery relevance)", () => {
+  const prefs = {
+    preferredLocations: ["India"],
+    preferredRoles: ["Backend Developer"],
+    preferredTech: ["Python", "AWS"],
+  };
+  const job = (over: Record<string, unknown>) => ({
+    source: "REMOTEOK" as const,
+    title: "Backend Developer",
+    remote: false,
+    ...over,
+  });
+
+  it("keeps India-located jobs and drops foreign onsite jobs", async () => {
+    const { buildPreferenceFilter } = await import("@/lib/engine/discovery");
+    const filter = buildPreferenceFilter(prefs);
+    expect(filter(job({ location: "Bengaluru, India" }))).toBe(true);
+    expect(filter(job({ location: "Berlin, Germany" }))).toBe(false);
+  });
+
+  it("drops remote jobs locked to other regions", async () => {
+    const { buildPreferenceFilter } = await import("@/lib/engine/discovery");
+    const filter = buildPreferenceFilter(prefs);
+    expect(filter(job({ remote: true, location: "Remote (US)" }))).toBe(false);
+    expect(
+      filter(
+        job({
+          remote: true,
+          location: "Remote",
+          description: "Remote from: Argentina, Brazil, Colombia, Mexico. LATAM only.",
+        })
+      )
+    ).toBe(false);
+    expect(
+      filter(job({ remote: true, location: "Remote", description: "US time zones required" }))
+    ).toBe(false);
+  });
+
+  it("keeps worldwide/India-inclusive remote jobs", async () => {
+    const { buildPreferenceFilter } = await import("@/lib/engine/discovery");
+    const filter = buildPreferenceFilter(prefs);
+    expect(filter(job({ remote: true, location: "Remote (worldwide)" }))).toBe(true);
+    expect(
+      filter(job({ remote: true, location: "Remote", description: "Open to candidates in India and APAC." }))
+    ).toBe(true);
+  });
+
+  it("requires role or tech overlap when preferences are set", async () => {
+    const { buildPreferenceFilter } = await import("@/lib/engine/discovery");
+    const filter = buildPreferenceFilter(prefs);
+    expect(filter(job({ location: "Pune, India", title: "Sales Executive" }))).toBe(false);
+    expect(
+      filter(job({ location: "Pune, India", title: "Platform Engineer", techStack: ["AWS"] }))
+    ).toBe(true);
+  });
+});

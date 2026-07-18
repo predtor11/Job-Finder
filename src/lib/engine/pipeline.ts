@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/prisma";
-import { analyzeJobFit } from "@/lib/ai/job-analyzer";
+import { analyzeJobFit, persistPostingContacts } from "@/lib/ai/job-analyzer";
 import { generateCoverLetter } from "@/lib/ai/cover-letter";
 import { generateEmail } from "@/lib/ai/email-generator";
 import { scheduleEmail } from "@/lib/email/scheduler";
+import { extractEmails } from "@/lib/utils";
 
 /**
  * Application Pipeline
@@ -104,10 +105,20 @@ export async function createApplication(params: {
       applicationId: application.id,
     });
 
+    // Recipient resolution, most-specific first: explicit override → chosen
+    // recruiter → any contact tied to this job → contact named in the
+    // analysis → an email printed in the posting text itself.
+    await persistPostingContacts(userId, jobId);
+    const jobRecruiter = await prisma.recruiter.findFirst({
+      where: { userId, jobId, email: { not: null } },
+      orderBy: { confidence: "desc" },
+    });
     const toEmail =
       params.toEmailOverride ??
       recruiter?.email ??
-      (job.analysis?.hiringContact as { email?: string } | null)?.email;
+      jobRecruiter?.email ??
+      (job.analysis?.hiringContact as { email?: string } | null)?.email ??
+      extractEmails(job.description ?? "")[0];
 
     if (toEmail) {
       const generated = await generateEmail({

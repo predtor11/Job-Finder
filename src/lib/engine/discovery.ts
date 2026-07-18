@@ -83,6 +83,34 @@ const ROLE_STOPWORDS = new Set([
   "level", "remote", "the", "and", "of", "a",
 ]);
 
+/** Signals that a remote job is open to the user's region (or the world). */
+const OPEN_REGION_REGEX = /\b(worldwide|global|anywhere|apac|asia)\b/i;
+
+/** Phrases that restrict a remote job to somewhere else. */
+const REGION_RESTRICTIONS: RegExp[] = [
+  /remote\s*\(\s*(us|usa|u\.s|uk|eu|europe|emea|latam|americas?|canada|north america)[^)]*\)/i,
+  /\b(us|usa|u\.s\.|uk|eu|europe|latam|canada)[- ](only|based)\b/i,
+  /\bonly\s+(in|from|for)?\s*(the\s+)?(us|usa|united states|uk|europe|eu|latam|canada)\b/i,
+  /\b(must|need to)\s+(be\s+)?(located|based|reside)\s+in\s+(the\s+)?(us|usa|united states|uk|europe|canada)\b/i,
+  /\bremote\s+(in|from)[:\s]+(the\s+)?(us|usa|united states|uk|europe|latam|argentina|brazil|colombia|mexico)\b/i,
+  /\bus\s+(time\s?zones?|hours|business hours)\b/i,
+  /\b(authorized|eligible)\s+to\s+work\s+in\s+(the\s+)?(us|usa|united states|uk|eu)\b/i,
+];
+
+/**
+ * Can someone in the user's preferred countries actually take this remote job?
+ * Checks the location string + the head of the description for region locks.
+ */
+function remoteEligible(
+  job: NormalizedJob,
+  preferredLocations: string[]
+): boolean {
+  const text = `${job.location ?? ""} ${(job.description ?? "").slice(0, 600)}`.toLowerCase();
+  if (preferredLocations.some((l) => text.includes(l))) return true;
+  if (OPEN_REGION_REGEX.test(text)) return true;
+  return !REGION_RESTRICTIONS.some((r) => r.test(text));
+}
+
 /**
  * Build a relevance predicate from the user's preferences.
  *
@@ -116,6 +144,11 @@ export function buildPreferenceFilter(prefs: {
       const location = (job.location ?? "").toLowerCase();
       const inPreferredPlace = locations.some((l) => location.includes(l));
       if (!job.remote && !inPreferredPlace) return false;
+      // Remote is only good if it's remote *for you* — "Remote (US only)"
+      // or LATAM-locked postings are dropped.
+      if (job.remote && !inPreferredPlace && !remoteEligible(job, locations)) {
+        return false;
+      }
     }
 
     if (roleTokens.length > 0 || tech.length > 0) {
@@ -197,12 +230,24 @@ export async function runDiscovery(userId: string): Promise<DiscoveryResult> {
     );
 
     // ── 2. Preference filter ──
-    // Keep a job when it's remote OR in a preferred location; and, when the
-    // user named preferred roles/tech, when the title/stack overlaps them.
+    // Keep a job when it's in a preferred location OR remote-and-eligible;
+    // and when its title/stack overlaps the user's roles or skills. Skills
+    // come from the parsed resumes themselves, not just the settings lists —
+    // discovery stays aligned with what the user can actually evidence.
+    const resumeProfiles = await prisma.resumeProfile.findMany({
+      where: { resume: { userId, parseStatus: "PARSED" } },
+      select: { technologies: true },
+    });
+    const resumeTech = [
+      ...new Set(resumeProfiles.flatMap((p) => p.technologies)),
+    ].slice(0, 80);
+
     const prefs = buildPreferenceFilter({
       preferredLocations: settings?.preferredLocations ?? [],
       preferredRoles: settings?.preferredRoles ?? [],
-      preferredTech: settings?.preferredTech ?? [],
+      preferredTech: [
+        ...new Set([...(settings?.preferredTech ?? []), ...resumeTech]),
+      ],
     });
     const relevant = normalized.filter((job) => prefs(job));
     progress.skippedIrrelevant = normalized.length - relevant.length;
