@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
-  Briefcase, ExternalLink, Import, MapPin, RefreshCw, Search, Sparkles,
+  Briefcase, CheckCircle2, CircleDashed, ExternalLink, Import, Loader2,
+  MapPin, RefreshCw, Search, Sparkles, XCircle,
 } from "lucide-react";
 import { Topbar } from "@/components/layout/topbar";
 import { Button } from "@/components/ui/button";
@@ -23,9 +25,38 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { StatusBadge, MatchScore } from "@/components/shared/status-badge";
+import { Card } from "@/components/ui/card";
 import { useApiQuery, useApiMutation } from "@/hooks/use-api";
 import { formatSalary, timeAgo } from "@/lib/utils";
 import { toast } from "sonner";
+import type { DiscoveryProgress } from "@/lib/engine/discovery";
+
+interface DiscoveryRun {
+  id: string;
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+  payload: DiscoveryProgress | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  remoteok: "RemoteOK",
+  "hn-whoishiring": "HN Who is Hiring",
+  greenhouse: "Greenhouse",
+  lever: "Lever",
+  ashby: "Ashby",
+  "career-page": "Career pages",
+};
+
+const STAGE_LABELS: Record<string, string> = {
+  fetching: "Fetching from job sources…",
+  saving: "Saving new jobs…",
+  matching: "Checking your saved searches…",
+  analyzing: "Scoring newest jobs against your resumes…",
+  done: "Finished",
+  error: "Failed",
+};
 
 interface JobRow {
   id: string;
@@ -66,6 +97,7 @@ function JobsContent() {
     pageSize: "25",
   }).toString();
 
+  const queryClient = useQueryClient();
   const { data, isLoading } = useApiQuery<{
     jobs: JobRow[];
     total: number;
@@ -76,10 +108,33 @@ function JobsContent() {
     "POST",
     () => "/api/jobs/discover",
     {
-      invalidate: [["jobs"]],
+      invalidate: [["jobs"], ["discovery-status"]],
       successMessage: (r) => `Discovery finished — ${r.inserted} new jobs`,
     }
   );
+
+  // Live progress: poll the latest run while one is active (covers runs
+  // started here, in another tab, or by cron).
+  const { data: runData } = useApiQuery<{ run: DiscoveryRun | null }>(
+    ["discovery-status"],
+    "/api/jobs/discover",
+    {
+      refetchInterval: (query) =>
+        discover.isPending || query.state.data?.run?.status === "RUNNING"
+          ? 1500
+          : false,
+    }
+  );
+  const run = runData?.run ?? null;
+  const running = discover.isPending || run?.status === "RUNNING";
+  const progress = run?.payload ?? null;
+
+  // Stream freshly saved jobs into the table while the run progresses.
+  useEffect(() => {
+    if (run?.status === "RUNNING" || run?.status === "COMPLETED") {
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    }
+  }, [run?.status, progress?.inserted, progress?.stage, queryClient]);
 
   const importJob = useApiMutation<void, { jobId: string }>(
     "POST",
@@ -209,13 +264,79 @@ function JobsContent() {
               size="sm"
               className="h-9"
               onClick={() => discover.mutate()}
-              disabled={discover.isPending}
+              disabled={running}
             >
-              <RefreshCw className={discover.isPending ? "size-3.5 animate-spin" : "size-3.5"} />
-              {discover.isPending ? "Searching…" : "Discover now"}
+              <RefreshCw className={running ? "size-3.5 animate-spin" : "size-3.5"} />
+              {running ? "Searching…" : "Discover now"}
             </Button>
           </div>
         </div>
+
+        {/* Live discovery progress */}
+        {running && (
+          <Card className="gap-3 p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Loader2 className="size-4 animate-spin text-primary" />
+                <p className="text-sm font-medium">
+                  {STAGE_LABELS[progress?.stage ?? "fetching"]}
+                </p>
+              </div>
+              <p className="text-sm tabular-nums text-muted-foreground">
+                {progress ? (
+                  <>
+                    <span className="font-medium text-foreground">
+                      {progress.inserted}
+                    </span>{" "}
+                    new · {progress.duplicates} known
+                    {progress.skippedIrrelevant > 0 &&
+                      ` · ${progress.skippedIrrelevant} off-profile`}
+                    {progress.analyzed > 0 && ` · ${progress.analyzed} scored`}
+                  </>
+                ) : (
+                  "starting…"
+                )}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-3">
+              {Object.entries(progress?.sources ?? {}).map(([name, src]) => (
+                <div
+                  key={name}
+                  className="flex items-center justify-between text-sm"
+                >
+                  <span className="flex items-center gap-1.5 text-muted-foreground">
+                    {src.status === "running" ? (
+                      <Loader2 className="size-3.5 animate-spin text-primary" />
+                    ) : src.status === "ok" ? (
+                      <CheckCircle2 className="size-3.5 text-success" />
+                    ) : src.status === "error" ? (
+                      <XCircle className="size-3.5 text-destructive" />
+                    ) : (
+                      <CircleDashed className="size-3.5" />
+                    )}
+                    {SOURCE_LABELS[name] ?? name}
+                  </span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {src.status === "error" ? "failed" : src.fetched}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {progress?.stage === "saving" && progress.fetched > 200 && (
+              <p className="text-xs text-muted-foreground">
+                Saving {progress.fetched} fetched postings — new ones appear in
+                the list below as they land.
+              </p>
+            )}
+          </Card>
+        )}
+        {run?.status === "FAILED" && !running && (
+          <Card className="border-destructive/30 p-3">
+            <p className="text-sm text-destructive">
+              Last discovery run failed: {run.error ?? "unknown error"}
+            </p>
+          </Card>
+        )}
 
         {/* Jobs table */}
         <div className="overflow-hidden rounded-lg border">
@@ -322,7 +443,7 @@ function JobsContent() {
                         size="sm"
                         className="mt-2"
                         onClick={() => discover.mutate()}
-                        disabled={discover.isPending}
+                        disabled={running}
                       >
                         <Sparkles className="size-3.5" /> Run discovery
                       </Button>

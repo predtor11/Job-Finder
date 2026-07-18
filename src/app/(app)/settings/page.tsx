@@ -73,6 +73,7 @@ function SettingsContent() {
     "PATCH",
     () => "/api/settings",
     {
+      body: (vars) => vars,
       invalidate: [["settings"]],
       successMessage: "Settings saved",
       onSuccess: () => setGeminiKey(""),

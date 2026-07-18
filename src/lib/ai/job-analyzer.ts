@@ -106,6 +106,37 @@ Return JSON:
   "missingSkills": [], "strengths": [], "weaknesses": [], "resumeSuggestions": [] }`;
 
 /**
+ * Full analysis for one job: enrich structured fields from the raw description
+ * when the source didn't provide them (also backfills salary), then score fit
+ * against the resume library. Used by the analyze API route and by discovery's
+ * auto-analysis pass.
+ */
+export async function analyzeJob(userId: string, jobId: string) {
+  const job = await prisma.job.findFirst({ where: { id: jobId, userId } });
+  if (!job) throw new Error("Job not found");
+
+  if (job.description && job.skills.length === 0) {
+    const fields = await extractJobFields(userId, job.description);
+    await prisma.job.update({
+      where: { id: job.id },
+      data: {
+        skills: fields.skills,
+        techStack: job.techStack.length ? job.techStack : fields.techStack,
+        requirements: fields.requirements,
+        responsibilities: fields.responsibilities,
+        experienceLevel: job.experienceLevel ?? fields.experienceLevel,
+        employmentType: job.employmentType ?? fields.employmentType,
+        salaryMin: job.salaryMin ?? fields.salaryMin ?? undefined,
+        salaryMax: job.salaryMax ?? fields.salaryMax ?? undefined,
+        salaryCurrency: job.salaryCurrency ?? fields.salaryCurrency ?? undefined,
+      },
+    });
+  }
+
+  return analyzeJobFit(userId, jobId);
+}
+
+/**
  * Analyze fit for a job against all parsed resumes; persists JobAnalysis and
  * returns it. Skips silently if the user has no parsed resumes yet.
  */

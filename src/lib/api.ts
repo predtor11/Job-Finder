@@ -40,8 +40,13 @@ export function errorResponse(error: unknown): NextResponse {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (error instanceof z.ZodError) {
+    const first = error.issues[0];
+    const where = first?.path.length ? ` (${first.path.join(".")})` : "";
     return NextResponse.json(
-      { error: "Validation failed", details: error.flatten() },
+      {
+        error: `Validation failed${where}: ${first?.message ?? "invalid input"}`,
+        details: error.flatten(),
+      },
       { status: 400 }
     );
   }

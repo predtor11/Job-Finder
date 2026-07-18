@@ -11,13 +11,19 @@ import {
   type NormalizedJob,
 } from "@/lib/jobs/types";
 import { normalizeCompanyName, sha256 } from "@/lib/utils";
+import { analyzeJob } from "@/lib/ai/job-analyzer";
+import { AiBudgetExceededError } from "@/lib/ai/gemini";
 import type { Job, Prisma } from "@prisma/client";
 
 /**
- * Job Discovery Engine — runs every few hours per user (cron/queue).
- *  1. Fan out to enabled source adapters (independent failures tolerated).
+ * Job Discovery Engine — runs every few hours per user (cron/queue) or on
+ * demand from the UI.
+ *
+ *  1. Fan out to enabled source adapters (independent failures tolerated),
+ *     reporting per-source progress into a BackgroundJob row the UI polls.
  *  2. Dedupe by fingerprint: sha256(url) or sha256(company|title|location).
- *  3. Upsert Company + Job rows.
+ *  3. Batch-persist: one lookup + chunked createMany instead of per-job
+ *     round-trips (matters — the DB may be 100ms+ away from the runtime).
  *  4. Evaluate saved searches → notify on new matches.
  */
 
@@ -30,11 +36,97 @@ const ADAPTERS = [
   careerPageAdapter,
 ];
 
+export interface SourceProgress {
+  status: "pending" | "running" | "ok" | "error";
+  fetched: number;
+  error?: string;
+}
+
+export interface DiscoveryProgress {
+  stage: "fetching" | "saving" | "matching" | "analyzing" | "done" | "error";
+  sources: Record<string, SourceProgress>;
+  fetched: number;
+  inserted: number;
+  duplicates: number;
+  /** Dropped by the preference filter (location/role mismatch). */
+  skippedIrrelevant: number;
+  /** Jobs auto-scored against the resume library this run. */
+  analyzed: number;
+  errors: string[];
+  startedAt: string;
+  finishedAt?: string;
+}
+
 export interface DiscoveryResult {
   fetched: number;
   inserted: number;
   duplicates: number;
   errors: string[];
+}
+
+const CHUNK_SIZE = 100;
+
+/** Max jobs auto-scored per discovery run (2 AI calls each — budget guard). */
+const AUTO_ANALYZE_LIMIT = 10;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+/** Words in role preferences that don't identify the role itself. */
+const ROLE_STOPWORDS = new Set([
+  "senior", "junior", "staff", "principal", "lead", "sr", "jr", "mid",
+  "level", "remote", "the", "and", "of", "a",
+]);
+
+/**
+ * Build a relevance predicate from the user's preferences.
+ *
+ *  • Locations ("India", "Bangalore"…): a job passes when it is remote OR its
+ *    location matches one of them — i.e. local jobs always, foreign only when
+ *    remote. No locations configured → no location filtering.
+ *  • Roles/tech: when configured, the title or tech stack must share at least
+ *    one significant token with a preferred role, or mention a preferred
+ *    technology. Loose on purpose — "Software Engineer" matches any
+ *    engineering title. Nothing configured → no role filtering.
+ */
+export function buildPreferenceFilter(prefs: {
+  preferredLocations: string[];
+  preferredRoles: string[];
+  preferredTech: string[];
+}): (job: NormalizedJob) => boolean {
+  const locations = prefs.preferredLocations
+    .map((l) => l.toLowerCase().trim())
+    .filter((l) => l && l !== "remote"); // "remote" is the remote flag, not a place
+  const roleTokens = [
+    ...new Set(
+      prefs.preferredRoles
+        .flatMap((r) => r.toLowerCase().split(/[^a-z0-9+#.]+/))
+        .filter((t) => t.length > 2 && !ROLE_STOPWORDS.has(t))
+    ),
+  ];
+  const tech = prefs.preferredTech.map((t) => t.toLowerCase().trim()).filter(Boolean);
+
+  return (job: NormalizedJob) => {
+    if (locations.length > 0) {
+      const location = (job.location ?? "").toLowerCase();
+      const inPreferredPlace = locations.some((l) => location.includes(l));
+      if (!job.remote && !inPreferredPlace) return false;
+    }
+
+    if (roleTokens.length > 0 || tech.length > 0) {
+      const haystack = `${job.title} ${(job.techStack ?? []).join(" ")}`.toLowerCase();
+      const roleHit = roleTokens.some((t) => haystack.includes(t));
+      const techHit = tech.some((t) => haystack.includes(t));
+      if (!roleHit && !techHit) return false;
+    }
+
+    return true;
+  };
 }
 
 export async function runDiscovery(userId: string): Promise<DiscoveryResult> {
@@ -44,107 +136,248 @@ export async function runDiscovery(userId: string): Promise<DiscoveryResult> {
     ...((settings?.jobSources as JobSourceConfig | null) ?? {}),
   };
 
-  const result: DiscoveryResult = {
+  const progress: DiscoveryProgress = {
+    stage: "fetching",
+    sources: Object.fromEntries(
+      ADAPTERS.map((a) => [a.name, { status: "pending", fetched: 0 }])
+    ),
     fetched: 0,
     inserted: 0,
     duplicates: 0,
+    skippedIrrelevant: 0,
+    analyzed: 0,
     errors: [],
+    startedAt: new Date().toISOString(),
   };
 
-  const settled = await Promise.allSettled(
-    ADAPTERS.map((a) => a.fetchJobs(config, userId))
-  );
-
-  const normalized: NormalizedJob[] = [];
-  settled.forEach((outcome, i) => {
-    if (outcome.status === "fulfilled") {
-      normalized.push(...outcome.value);
-    } else {
-      result.errors.push(`${ADAPTERS[i].name}: ${outcome.reason}`);
-    }
-  });
-  result.fetched = normalized.length;
-
-  const newJobs: Job[] = [];
-  for (const job of normalized) {
-    try {
-      const inserted = await upsertJob(userId, job);
-      if (inserted) {
-        newJobs.push(inserted);
-        result.inserted++;
-      } else {
-        result.duplicates++;
-      }
-    } catch (error) {
-      result.errors.push(`persist "${job.title}": ${error}`);
-    }
-  }
-
-  if (newJobs.length > 0) {
-    await evaluateSavedSearches(userId, newJobs);
-  }
-
-  await prisma.activityLog.create({
+  // Progress row the UI polls (GET /api/jobs/discover).
+  const run = await prisma.backgroundJob.create({
     data: {
       userId,
-      level: result.errors.length ? "WARN" : "INFO",
-      event: "discovery.run",
-      message: `Discovery: ${result.inserted} new, ${result.duplicates} duplicate, ${result.errors.length} errors`,
-      metadata: result as unknown as Prisma.InputJsonValue,
+      queue: "discovery",
+      name: "discovery.run",
+      status: "RUNNING",
+      startedAt: new Date(),
+      payload: progress as unknown as Prisma.InputJsonValue,
     },
   });
 
-  return result;
-}
+  const saveProgress = async () => {
+    await prisma.backgroundJob
+      .update({
+        where: { id: run.id },
+        data: { payload: progress as unknown as Prisma.InputJsonValue },
+      })
+      .catch(() => {}); // progress reporting must never kill the run
+  };
 
-/** Insert if unseen; returns the Job when newly created, null when duplicate. */
-async function upsertJob(
-  userId: string,
-  job: NormalizedJob
-): Promise<Job | null> {
-  const fingerprint = await sha256(
-    job.url ??
-      `${normalizeCompanyName(job.companyName ?? "")}|${job.title.toLowerCase()}|${(job.location ?? "").toLowerCase()}`
-  );
+  try {
+    // ── 1. Fetch from all enabled sources in parallel ──
+    const normalized: NormalizedJob[] = [];
+    await Promise.all(
+      ADAPTERS.map(async (adapter) => {
+        progress.sources[adapter.name].status = "running";
+        await saveProgress();
+        try {
+          const jobs = await adapter.fetchJobs(config, userId);
+          normalized.push(...jobs);
+          progress.sources[adapter.name] = { status: "ok", fetched: jobs.length };
+          progress.fetched += jobs.length;
+        } catch (error) {
+          const message = String(error).slice(0, 300);
+          progress.sources[adapter.name] = {
+            status: "error",
+            fetched: 0,
+            error: message,
+          };
+          progress.errors.push(`${adapter.name}: ${message}`);
+        }
+        await saveProgress();
+      })
+    );
 
-  const existing = await prisma.job.findUnique({
-    where: { userId_fingerprint: { userId, fingerprint } },
-    select: { id: true },
-  });
-  if (existing) return null;
-
-  let companyId: string | undefined;
-  if (job.companyName) {
-    const normalized = normalizeCompanyName(job.companyName);
-    const company = await prisma.company.upsert({
-      where: { userId_normalized: { userId, normalized } },
-      create: { userId, name: job.companyName, normalized },
-      update: {},
+    // ── 2. Preference filter ──
+    // Keep a job when it's remote OR in a preferred location; and, when the
+    // user named preferred roles/tech, when the title/stack overlaps them.
+    const prefs = buildPreferenceFilter({
+      preferredLocations: settings?.preferredLocations ?? [],
+      preferredRoles: settings?.preferredRoles ?? [],
+      preferredTech: settings?.preferredTech ?? [],
     });
-    companyId = company.id;
+    const relevant = normalized.filter((job) => prefs(job));
+    progress.skippedIrrelevant = normalized.length - relevant.length;
+
+    // ── 3. Fingerprint + in-batch dedupe ──
+    progress.stage = "saving";
+    await saveProgress();
+
+    const byFingerprint = new Map<string, NormalizedJob>();
+    for (const job of relevant) {
+      const fingerprint = await sha256(
+        job.url ??
+          `${normalizeCompanyName(job.companyName ?? "")}|${job.title.toLowerCase()}|${(job.location ?? "").toLowerCase()}`
+      );
+      if (!byFingerprint.has(fingerprint)) byFingerprint.set(fingerprint, job);
+    }
+    const fingerprints = [...byFingerprint.keys()];
+
+    // ── 3. One lookup for already-known jobs ──
+    const existing = new Set<string>();
+    for (const batch of chunk(fingerprints, 500)) {
+      const rows = await prisma.job.findMany({
+        where: { userId, fingerprint: { in: batch } },
+        select: { fingerprint: true },
+      });
+      rows.forEach((r) => existing.add(r.fingerprint));
+    }
+    const fresh = fingerprints.filter((f) => !existing.has(f));
+    progress.duplicates = relevant.length - fresh.length;
+
+    // ── 4. Batch-upsert companies ──
+    const companyNames = new Map<string, string>(); // normalized → display
+    for (const f of fresh) {
+      const job = byFingerprint.get(f)!;
+      if (job.companyName) {
+        const norm = normalizeCompanyName(job.companyName);
+        if (norm && !companyNames.has(norm)) companyNames.set(norm, job.companyName);
+      }
+    }
+    if (companyNames.size > 0) {
+      await prisma.company.createMany({
+        data: [...companyNames.entries()].map(([normalized, name]) => ({
+          userId,
+          name,
+          normalized,
+        })),
+        skipDuplicates: true,
+      });
+    }
+    const companyRows = await prisma.company.findMany({
+      where: { userId, normalized: { in: [...companyNames.keys()] } },
+      select: { id: true, normalized: true },
+    });
+    const companyId = new Map(companyRows.map((c) => [c.normalized, c.id]));
+
+    // ── 5. Chunked createMany for new jobs ──
+    for (const batch of chunk(fresh, CHUNK_SIZE)) {
+      const created = await prisma.job.createMany({
+        data: batch.map((fingerprint) => {
+          const job = byFingerprint.get(fingerprint)!;
+          return {
+            userId,
+            companyId: job.companyName
+              ? companyId.get(normalizeCompanyName(job.companyName))
+              : undefined,
+            source: job.source,
+            sourceId: job.sourceId,
+            fingerprint,
+            url: job.url,
+            title: job.title.slice(0, 200),
+            description: job.description,
+            location: job.location,
+            remote: job.remote ?? false,
+            employmentType: job.employmentType,
+            salaryMin: job.salaryMin,
+            salaryMax: job.salaryMax,
+            salaryCurrency: job.salaryCurrency,
+            techStack: job.techStack ?? [],
+            postedAt: job.postedAt,
+            raw: (job.raw ?? undefined) as Prisma.InputJsonValue | undefined,
+          };
+        }),
+        skipDuplicates: true,
+      });
+      progress.inserted += created.count;
+      await saveProgress(); // UI sees the count climb chunk by chunk
+    }
+
+    // ── 6. Saved searches → notifications ──
+    progress.stage = "matching";
+    await saveProgress();
+
+    let createdJobs: Job[] = [];
+    if (fresh.length > 0) {
+      createdJobs = await prisma.job.findMany({
+        where: { userId, fingerprint: { in: fresh } },
+      });
+      await evaluateSavedSearches(userId, createdJobs);
+    }
+
+    // ── 7. Auto-analyze the newest jobs so Match scores appear unprompted ──
+    // Capped per run to stay inside the free-tier AI budget; the rest can be
+    // analyzed on demand from the job page.
+    const parsedResumes = await prisma.resume.count({
+      where: { userId, parseStatus: "PARSED" },
+    });
+    if (parsedResumes > 0 && createdJobs.length > 0) {
+      progress.stage = "analyzing";
+      await saveProgress();
+
+      const targets = [...createdJobs]
+        .sort(
+          (a, b) =>
+            (b.postedAt?.getTime() ?? b.discoveredAt.getTime()) -
+            (a.postedAt?.getTime() ?? a.discoveredAt.getTime())
+        )
+        .slice(0, AUTO_ANALYZE_LIMIT);
+
+      for (const job of targets) {
+        try {
+          await analyzeJob(userId, job.id);
+          progress.analyzed++;
+          await saveProgress();
+        } catch (error) {
+          if (error instanceof AiBudgetExceededError) {
+            progress.errors.push("AI budget reached — remaining jobs left unscored.");
+            break;
+          }
+          // One bad posting must not stop the rest.
+        }
+      }
+    }
+
+    progress.stage = "done";
+    progress.finishedAt = new Date().toISOString();
+    await prisma.backgroundJob.update({
+      where: { id: run.id },
+      data: {
+        status: "COMPLETED",
+        finishedAt: new Date(),
+        payload: progress as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        userId,
+        level: progress.errors.length ? "WARN" : "INFO",
+        event: "discovery.run",
+        message: `Discovery: ${progress.inserted} new, ${progress.duplicates} duplicate, ${progress.errors.length} errors`,
+        metadata: progress as unknown as Prisma.InputJsonValue,
+      },
+    });
+  } catch (error) {
+    progress.stage = "error";
+    progress.errors.push(String(error).slice(0, 500));
+    progress.finishedAt = new Date().toISOString();
+    await prisma.backgroundJob.update({
+      where: { id: run.id },
+      data: {
+        status: "FAILED",
+        finishedAt: new Date(),
+        error: String(error).slice(0, 1000),
+        payload: progress as unknown as Prisma.InputJsonValue,
+      },
+    });
+    throw error;
   }
 
-  return prisma.job.create({
-    data: {
-      userId,
-      companyId,
-      source: job.source,
-      sourceId: job.sourceId,
-      fingerprint,
-      url: job.url,
-      title: job.title.slice(0, 200),
-      description: job.description,
-      location: job.location,
-      remote: job.remote ?? false,
-      employmentType: job.employmentType,
-      salaryMin: job.salaryMin,
-      salaryMax: job.salaryMax,
-      salaryCurrency: job.salaryCurrency,
-      techStack: job.techStack ?? [],
-      postedAt: job.postedAt,
-      raw: (job.raw ?? undefined) as Prisma.InputJsonValue | undefined,
-    },
-  });
+  return {
+    fetched: progress.fetched,
+    inserted: progress.inserted,
+    duplicates: progress.duplicates,
+    errors: progress.errors,
+  };
 }
 
 export interface SearchFilters {
