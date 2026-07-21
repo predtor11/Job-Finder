@@ -84,17 +84,17 @@ export async function generateEmail(
 
   const typeInstructions: Record<string, string> = {
     APPLICATION: `A job application email to ${params.recruiterName ?? "the hiring team"} for the ${roleTitle} position at ${companyName}.
-- Brief: who the candidate is (1 sentence), why this role at this company (1-2 sentences), top 2 relevant qualifications with specifics, note that resume ${params.coverLetterExcerpt ? "and cover letter are" : "is"} attached, professional closing.
-- 110–170 words.`,
+- Who the candidate is (1-2 sentences), why this role at this company specifically (2-3 sentences, concrete — product, mission, or tech, not generic praise), 3 relevant qualifications/projects with specifics (not a bare list — weave in real detail and impact), note that resume ${params.coverLetterExcerpt ? "and cover letter are" : "is"} attached, warm professional closing.
+- 220–300 words, 3-4 short paragraphs. Substantial enough to be memorable, never padded with filler.`,
     COLD_OUTREACH: `A cold outreach email to ${params.recruiterName ?? "a recruiter"}${params.recruiterRole ? ` (${params.recruiterRole})` : ""} at ${companyName} about the ${roleTitle} opening.
 - Open with a specific, genuine reason for interest in ${companyName} — never generic flattery.
-- Reference 1-2 pieces of directly relevant experience with concrete detail.
-- 80–130 words — respect their time. One clear, low-pressure ask (e.g. "would you be open to considering my application").
+- Reference 2-3 pieces of directly relevant experience with concrete detail and real impact, not a bullet dump.
+- 170–230 words, 2-3 short paragraphs — still respectful of their time, but substantial enough to make a real case. One clear, low-pressure ask (e.g. "would you be open to considering my application").
 - Must NOT sound automated or templated. Warm, direct, specific.`,
     FOLLOW_UP: `A polite follow-up on an application sent ${params.followUpContext?.daysSinceSent ?? "several"} days ago (follow-up #${params.followUpContext?.followUpNumber ?? 1}) for ${roleTitle} at ${companyName}.
 - Reference the original email (subject: "${params.followUpContext?.originalSubject ?? ""}").
 - Reaffirm interest with ONE new angle or recent accomplishment — do not repeat the original pitch.
-- 60–100 words. Gracious, zero pressure, easy to reply to.`,
+- 90–140 words. Gracious, low-pressure, easy to reply to — deliberately the shortest of the three email types.`,
   };
 
   const templateBlock = template

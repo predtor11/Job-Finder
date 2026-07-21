@@ -66,6 +66,7 @@ export const POST = withAuth<Params>(async ({ request, userId, params }) => {
     data: {
       userId,
       applicationId: application.id,
+      resumeId: application.resumeId,
       type: "APPLICATION",
       status: "PENDING_APPROVAL",
       toEmail: body.toEmail,

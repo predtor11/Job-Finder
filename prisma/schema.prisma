@@ -165,6 +165,7 @@ model Resume {
   profile      ResumeProfile?
   applications Application[]
   coverLetters CoverLetter[]
+  emails       Email[]
 
   @@map("resumes")
 }
@@ -514,6 +515,8 @@ model Email {
   recruiter     Recruiter? @relation(fields: [recruiterId], references: [id], onDelete: SetNull)
   templateId    String?  @map("template_id")
   template      EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  resumeId      String?  @map("resume_id") /// explicit attachment target — set independently of applicationId so cold outreach (no application) still attaches one
+  resume        Resume?  @relation(fields: [resumeId], references: [id], onDelete: SetNull)
 
   type      EmailType
   direction EmailDirection @default(OUTBOUND)

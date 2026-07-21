@@ -154,6 +154,22 @@ export async function dispatchDueEmails(userId: string): Promise<DispatchResult>
     include: { application: true },
   });
 
+  // Lazily resolved, cached per tick — the last-resort fallback so
+  // attachResume: true never sends with no CV just because an email predates
+  // explicit resumeId tracking or has no linked application.
+  let defaultResumeId: string | null | undefined;
+  const getDefaultResumeId = async (): Promise<string | null> => {
+    if (defaultResumeId === undefined) {
+      const def = await prisma.resume.findFirst({
+        where: { userId, parseStatus: "PARSED" },
+        orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+        select: { id: true },
+      });
+      defaultResumeId = def?.id ?? null;
+    }
+    return defaultResumeId;
+  };
+
   for (const email of due) {
     // Atomic claim — a competing worker/cron tick loses this race safely.
     const claimed = await prisma.email.updateMany({
@@ -178,15 +194,17 @@ export async function dispatchDueEmails(userId: string): Promise<DispatchResult>
     }
 
     try {
+      const attachResumeId = email.attachResume
+        ? (email.resumeId ?? email.application?.resumeId ?? (await getDefaultResumeId()))
+        : null;
+
       const sendResult = await sendGmail({
         userId,
         to: email.toEmail,
         toName: email.toName,
         subject: email.subject,
         bodyText: withSignature(email.bodyText, s.emailSignature),
-        attachResumeId: email.attachResume
-          ? (email.application?.resumeId ?? null)
-          : null,
+        attachResumeId,
         gmailThreadId: email.gmailThreadId,
         inReplyToMessageId:
           email.type === "FOLLOW_UP" ? await originalMessageId(email.applicationId) : null,

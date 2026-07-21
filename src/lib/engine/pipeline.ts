@@ -160,6 +160,7 @@ export async function createApplication(params: {
           userId,
           applicationId: application.id,
           recruiterId: recruiter?.id,
+          resumeId, // explicit — attachment no longer depends on the application link
           templateId: generated.templateId,
           type: "APPLICATION",
           status: "PENDING_APPROVAL",
@@ -244,6 +245,7 @@ export async function createColdOutreach(params: {
     data: {
       userId,
       recruiterId: recruiter.id,
+      resumeId, // defaults to the user's default resume — cold outreach has no application to hang this off
       templateId: generated.templateId,
       type: "COLD_OUTREACH",
       status: "PENDING_APPROVAL", // always — no mode bypasses this

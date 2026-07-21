@@ -38,18 +38,24 @@ export async function sendGmail(params: SendParams): Promise<SendResult> {
     const resume = await prisma.resume.findFirst({
       where: { id: params.attachResumeId, userId: params.userId },
     });
-    if (resume) {
-      const supabase = createAdminClient();
-      const { data, error } = await supabase.storage
-        .from("resumes")
-        .download(resume.storagePath);
-      if (error) throw new Error(`Could not download resume: ${error.message}`);
-      attachment = {
-        filename: resume.fileName,
-        mimeType: resume.mimeType,
-        data: Buffer.from(await data.arrayBuffer()),
-      };
+    // Fail loud rather than silently sending without a CV — a missing resume
+    // here means the record was deleted after the draft was created, which
+    // the user needs to know about, not have quietly swallowed.
+    if (!resume) {
+      throw new Error(
+        `Resume ${params.attachResumeId} could not be found — it may have been deleted. Re-attach a resume on this application before sending.`
+      );
     }
+    const supabase = createAdminClient();
+    const { data, error } = await supabase.storage
+      .from("resumes")
+      .download(resume.storagePath);
+    if (error) throw new Error(`Could not download resume: ${error.message}`);
+    attachment = {
+      filename: resume.fileName,
+      mimeType: resume.mimeType,
+      data: Buffer.from(await data.arrayBuffer()),
+    };
   }
 
   // Fetch RFC Message-ID header for proper reply threading.
