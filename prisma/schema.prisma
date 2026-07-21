@@ -325,6 +325,7 @@ enum RecruiterSourceType {
   COMPANY_CONTACT /// public company contact page
   PUBLIC_PROFILE  /// public recruiter profile the user linked
   MANUAL
+  IMPORTED_LIST   /// bulk-imported from the user's own spreadsheet/pasted list
 }
 
 model Recruiter {
