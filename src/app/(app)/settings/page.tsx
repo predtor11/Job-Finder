@@ -25,6 +25,24 @@ import {
 import { useApiQuery, useApiMutation } from "@/hooks/use-api";
 import { toast } from "sonner";
 
+/**
+ * Board tokens verified (by checking each board's actual job locations) to
+ * carry a meaningful share of India-located or genuinely India-eligible
+ * remote postings. Boards with zero India yield were deliberately excluded —
+ * this list is curated for signal, not maximum coverage.
+ */
+const INDIA_SUGGESTED_BOARDS: Record<string, string[]> = {
+  greenhouse: [
+    "groww", "phonepe", "postman", "zenoti", "tekion", "druva", "databricks",
+    "stripe", "mongodb", "gitlab", "twilio", "elastic", "turing", "datadog",
+    "cockroachlabs", "figma", "cloudflare",
+  ],
+  ashby: [
+    "atlan", "skyflow", "linear", "ramp", "replit", "supabase", "posthog",
+    "cursor", "notion",
+  ],
+};
+
 interface SettingsPayload {
   settings: {
     aiFastModel: string;
@@ -550,8 +568,27 @@ function SettingsContent() {
                         />
                       </div>
                       {enabled && (
-                        <div className="mt-2 space-y-1">
-                          <Label className="text-xs">{src.listLabel}</Label>
+                        <div className="mt-2 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs">{src.listLabel}</Label>
+                            {INDIA_SUGGESTED_BOARDS[src.key] && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-2 text-[11px]"
+                                onClick={() => {
+                                  const current = (cfg[src.listKey] as string[] | undefined) ?? [];
+                                  const merged = [
+                                    ...new Set([...current, ...INDIA_SUGGESTED_BOARDS[src.key]]),
+                                  ];
+                                  patchSources(src.key, { [src.listKey]: merged });
+                                }}
+                              >
+                                + Add India-verified boards
+                              </Button>
+                            )}
+                          </div>
                           <Input
                             className="h-8 text-sm"
                             placeholder={src.placeholder}

@@ -29,6 +29,7 @@ export const GET = withAuth(async ({ request, userId }) => {
         },
       },
       recruiter: { select: { name: true, sourceUrl: true, sourceType: true } },
+      resume: { select: { label: true, fileName: true } },
     },
     orderBy: [{ scheduledAt: "asc" }, { createdAt: "desc" }],
     take: 300,

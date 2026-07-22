@@ -3,7 +3,9 @@
 import { useState, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Check, ExternalLink, Inbox, Pencil, Trash2, X } from "lucide-react";
+import {
+  AlertTriangle, Check, ExternalLink, Inbox, Paperclip, Pencil, Trash2, X,
+} from "lucide-react";
 import { format } from "date-fns";
 import { Topbar } from "@/components/layout/topbar";
 import { Button } from "@/components/ui/button";
@@ -35,6 +37,8 @@ interface EmailRow {
     company: { name: string } | null;
   } | null;
   recruiter: { name: string; sourceUrl: string; sourceType: string } | null;
+  attachResume: boolean;
+  resume: { label: string; fileName: string } | null;
 }
 
 const TABS = [
@@ -215,6 +219,23 @@ function EmailsContent() {
                         ? `sent ${format(new Date(email.sentAt), "MMM d, HH:mm")}`
                         : `created ${format(new Date(email.createdAt), "MMM d, HH:mm")}`}
                   </p>
+                  {email.attachResume ? (
+                    email.resume ? (
+                      <p className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
+                        <Paperclip className="size-3" />
+                        Resume attached: {email.resume.label} ({email.resume.fileName})
+                      </p>
+                    ) : (
+                      <p className="flex items-center gap-1 text-xs text-destructive">
+                        <AlertTriangle className="size-3" />
+                        No resume set to attach — edit this draft or check Resumes
+                      </p>
+                    )
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      No resume attached (follow-up — already sent with the first email)
+                    </p>
+                  )}
                 </CardHeader>
                 <CardContent className="px-4">
                   <p className="line-clamp-6 whitespace-pre-wrap rounded-md bg-muted/40 p-3 text-sm leading-relaxed">
